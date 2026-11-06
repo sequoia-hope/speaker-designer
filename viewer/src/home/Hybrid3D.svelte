@@ -48,16 +48,24 @@
       const holder = new THREE.Group();
       holder.add(m);
       // seams: thin red planes where the core is cut into printed pieces
-      for (const cx of plan.cutsX) {
-        const pl = new THREE.Mesh(new THREE.PlaneGeometry(geo.coreMm * s, geo.H * s), seamMat);
-        pl.position.set((zc + geo.coreMm / 2) * s, (geo.H / 2) * s, (cx - geo.W / 2) * s);
+      for (const L of plan.cutLines) {
+        const len = Math.hypot(L.x2 - L.x1, L.y2 - L.y1);
+        const vertical = Math.abs(L.x2 - L.x1) < 1e-6;
+        const pl = new THREE.Mesh(new THREE.PlaneGeometry(geo.coreMm * s, len * s), seamMat);
+        if (vertical) pl.position.set((zc + geo.coreMm / 2) * s, ((L.y1 + L.y2) / 2) * s, (L.x1 - geo.W / 2) * s);
+        else {
+          pl.rotation.x = -Math.PI / 2;
+          pl.position.set((zc + geo.coreMm / 2) * s, L.y1 * s, ((L.x1 + L.x2) / 2 - geo.W / 2) * s);
+        }
         holder.add(pl);
       }
-      for (const cy of plan.cutsY) {
-        const pl = new THREE.Mesh(new THREE.PlaneGeometry(geo.coreMm * s, geo.W * s), seamMat);
-        pl.rotation.x = -Math.PI / 2;
-        pl.position.set((zc + geo.coreMm / 2) * s, cy * s, 0);
-        holder.add(pl);
+      // plywood strips (bends construction): wood boxes over the straight walls
+      for (const st of geo.strips) {
+        const r = st.rect;
+        const bx = new THREE.Mesh(new THREE.BoxGeometry(geo.coreMm * s, (r.y1 - r.y0) * s, (r.x1 - r.x0) * s), divMat);
+        bx.position.set((zc + geo.coreMm / 2) * s, ((r.y0 + r.y1) / 2) * s, ((r.x0 + r.x1) / 2 - geo.W / 2) * s);
+        bx.scale.set(1.002, 1.02, 1.0);
+        holder.add(bx);
       }
       for (const cz of plan.cutsZ) {
         const pl = new THREE.Mesh(new THREE.PlaneGeometry(geo.W * s, geo.H * s), seamMat);
@@ -195,7 +203,7 @@
     <label class="ex"><span>Plates apart</span><input type="range" min="0" max="1" step="0.01" bind:value={explode} aria-label="Explode plates" /></label>
     <button class="chip" class:on={showPlates} onclick={() => (showPlates = !showPlates)}>Side plates</button>
   </div>
-  <div class="hint">Light grey = printed core, red planes = where it is cut into printable pieces, wood = plates and dividers. Drag to orbit.</div>
+  <div class="hint">Light grey = printed, wood = plywood (plates, dividers, straight walls), red planes = where prints are cut into pieces. Drag to orbit.</div>
 </div>
 
 <style>

@@ -60,6 +60,9 @@
           <svg viewBox={`-60 -40 ${geo.W + 120} ${geo.H + 90}`} role="img" aria-label="Cross-section">
             <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
               <path d={solidPath} class="print" fill-rule="evenodd" />
+              {#each geo.dead as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="deadsp" />{/each}
+              {#each geo.strips as st}<rect x={st.rect.x0} y={st.rect.y0} width={st.rect.x1 - st.rect.x0} height={st.rect.y1 - st.rect.y0} class="ply" />{/each}
+              {#each geo.caps as c}<rect x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} class="capline" />{/each}
               {#if geo.mouthRect}<rect x={geo.mouthRect.x0 - 4} y={geo.mouthRect.y0} width="8" height={geo.mouthRect.y1 - geo.mouthRect.y0} class="mouth" />{/if}
               <!-- driver -->
               <rect x={geo.driver.x - 6} y={geo.driver.y - geo.driver.dia / 2} width="12" height={geo.driver.dia} class="drv" />
@@ -88,8 +91,10 @@
           <svg viewBox={`-30 -30 ${geo.W + 60} ${geo.H + 60}`} role="img" aria-label="Print layout">
             <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
               <path d={solidPath} class="print" fill-rule="evenodd" />
-              {#each plan.cutsX as c}<line x1={c} y1="-10" x2={c} y2={geo.H + 10} class="cut" />{/each}
-              {#each plan.cutsY as c}<line x1="-10" y1={c} x2={geo.W + 10} y2={c} class="cut" />{/each}
+              {#each geo.dead as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="deadsp" />{/each}
+              {#each geo.strips as st}<rect x={st.rect.x0} y={st.rect.y0} width={st.rect.x1 - st.rect.x0} height={st.rect.y1 - st.rect.y0} class="ply" />{/each}
+              {#each geo.caps as c}<rect x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} class="capline" />{/each}
+              {#each plan.cutLines as c}<line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} class="cut" />{/each}
               {#each plan.keys as k}<rect x={k.x - 6} y={k.y - 6} width="12" height="12" class="key" transform={`rotate(45 ${k.x} ${k.y})`} />{/each}
             </g>
             {#each plan.segments.filter((sg) => sg.z0 === 0 && sg.core === 0) as sg}
@@ -98,7 +103,7 @@
           </svg>
         </div>
         <p class="small muted">
-          Red dashed = cut lines (placed through walls where possible); ◆ = alignment keys. Printed flat (profile on the bed){plan.rotated ? ', rotated 90° to fit' : ''}, the extrusion grows upward
+          {geo.construction === 'bends' ? 'Only the yellow-outlined end-caps are printed; wood-coloured parts are plywood. ' : ''}Red dashed = cut lines (placed through walls where possible); ◆ = alignment keys. Printed flat (profile on the bed){plan.rotated ? ', rotated 90° to fit' : ''}, the extrusion grows upward
           {#if plan.cutsZ.length}in {plan.cutsZ.length + 1} layers of ≤ {home.hybrid.printer.maxZ} mm{/if}.
         </p>
         <div class="beds">
@@ -166,12 +171,32 @@
           <input id={`h-${key}`} type="range" min={mn} max={mx} step={st} bind:value={p[key]} />
         </div>
       {/each}
+      {#if p.type !== 'waveguide'}
+        <div class="seg" style="margin:6px 0">
+          <button class:on={p.construction === 'full'} onclick={() => (p.construction = 'full')}>Fully printed core</button>
+          <button class:on={p.construction === 'bends'} onclick={() => { p.construction = 'bends'; if (![12, 18, 19].includes(p.wallMm)) p.wallMm = 18; }}>Printed bends + plywood walls</button>
+        </div>
+        <p class="small muted" style="margin:0 0 6px">
+          {#if geo.construction === 'bends'}
+            Only the front and back end-caps are printed (the curved bends, rounded wall tips, mouth and throat). Every long straight wall is a plywood strip slotted into the caps — far less plastic and print time, same acoustics.
+          {:else}
+            The whole internal profile is one printed core — simplest assembly, most plastic.
+          {/if}
+        </p>
+      {/if}
+      {#if geo.construction === 'bends'}
+        <div class="chips">
+          <span class="small muted" style="align-self:center">Wall plywood:</span>
+          {#each [12, 18, 19] as tw}<button class="chip" class:on={p.wallMm === tw} onclick={() => (p.wallMm = tw)}>{tw === 19 ? '19 mm MDF' : `${tw} mm birch`}</button>{/each}
+        </div>
+      {:else}
       <div class="field">
         <label for="h-wall">Printed wall thickness</label>
         <span class="val">{p.wallMm.toFixed(1)} mm = {Math.round(p.wallMm / lw)} lines</span>
         <span class="hint">Snaps to whole {lw} mm lines. Chunky walls are stiffer; the flex check below tells you if they are enough.</span>
         <input id="h-wall" type="range" min={lw * 3} max={lw * 16} step={lw} value={p.wallMm} oninput={(e) => (p.wallMm = Math.round(+(e.target as HTMLInputElement).value / lw) * lw)} />
       </div>
+      {/if}
       <div class="field">
         <label for="h-div">Plywood dividers inside the core</label>
         <span class="val">{p.dividers} → {geo.cores} printed core{geo.cores > 1 ? 's' : ''} of {geo.coreMm.toFixed(0)} mm</span>
@@ -245,7 +270,7 @@
         {/each}
       </div>
       <div class="stats">
-        <div class="stat"><div class="k">Segments</div><div class="v">{plan.segments.length}</div><div class="s">{geo.cores > 1 ? `${geo.cores} cores × ` : ''}{plan.cutsX.length + 1} × {plan.cutsY.length + 1} tiles{plan.cutsZ.length ? ` × ${plan.cutsZ.length + 1} layers` : ''}</div></div>
+        <div class="stat"><div class="k">Segments</div><div class="v">{plan.segments.length}</div><div class="s">{geo.cores > 1 ? `${geo.cores} cores · ` : ''}{plan.regions.length > 1 ? 'front + back caps' : 'whole profile'}{plan.cutsZ.length ? ` · ${plan.cutsZ.length + 1} layers` : ''}</div></div>
         <div class="stat"><div class="k">Alignment keys</div><div class="v">{plan.keys.length}</div><div class="s">+ dowels between layers</div></div>
         <div class="stat"><div class="k">Filament / time</div><div class="v">{(plan.totalGrams / 1000).toFixed(1)} kg</div><div class="s">~{plan.hours.toFixed(0)} h at {home.hybrid.printer.flow} mm³/s · {plan.layers} layers per core</div></div>
         <div class="stat"><div class="k">Largest piece</div><div class="v sm">{Math.round(Math.max(...plan.segments.map((s) => s.bedW)))} × {Math.round(Math.max(...plan.segments.map((s) => s.bedH)))} mm</div><div class="s">fits {plan.usable[0]} × {plan.usable[1]} usable</div></div>
@@ -259,6 +284,21 @@
         </tbody>
       </table>
     </section>
+
+    {#if geo.strips.length}
+      <section class="card">
+        <h2>Plywood strips (per cabinet)</h2>
+        <p class="sub">All strips are {geo.coreMm.toFixed(0)} mm wide (the core thickness) and {p.wallMm} mm thick. Rip one long strip at that width, then crosscut to length.</p>
+        <table class="tbl">
+          <thead><tr><th>Part</th><th>Qty</th><th>Length</th></tr></thead>
+          <tbody>
+            {#each geo.strips as st}
+              <tr><td><b>{st.name}</b>{#if st.note}<span class="mm">{st.note}</span>{/if}</td><td>{st.qty}</td><td>{Math.round(st.lengthMm)} mm<span class="mm">{(st.lengthMm / 25.4).toFixed(1)}″</span></td></tr>
+            {/each}
+          </tbody>
+        </table>
+      </section>
+    {/if}
 
     <section class="card">
       <h2>Build notes</h2>
@@ -323,6 +363,20 @@
   }
   :global(.mouthlbl) {
     fill: #34d399;
+  }
+  :global(.deadsp) {
+    fill: #1e293b;
+  }
+  :global(.ply) {
+    fill: #c99a62;
+    stroke: #6b4a2a;
+    stroke-width: 1;
+  }
+  :global(.capline) {
+    fill: none;
+    stroke: #fbbf24;
+    stroke-width: 3;
+    stroke-dasharray: 10 6;
   }
   :global(.cut) {
     stroke: #f87171;

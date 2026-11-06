@@ -94,6 +94,8 @@ export interface HybridParams {
   wallMm: number;
   /** how much corners are rounded (0 = square, 1 = as round as the space allows) */
   rounding: number;
+  /** 'full' = the whole core is printed; 'bends' = printed end-caps hold plywood straight walls */
+  construction: 'full' | 'bends';
   /** number of path legs (folds + 1) */
   legs: number;
   /** horn: throat area as a fraction of the cone area (compression ratio⁻¹) */
@@ -120,8 +122,9 @@ export const HYBRID_PRESETS: Record<'sub' | 'living' | 'waveguide', HybridParams
     plateMm: 18,
     plateMaterial: 'bb18',
     dividers: 1,
-    wallMm: 15,
+    wallMm: 18,
     rounding: 0.9,
+    construction: 'bends',
     legs: 5,
     throatRatio: 0.45,
     rearChamberL: 55,
@@ -142,6 +145,7 @@ export const HYBRID_PRESETS: Record<'sub' | 'living' | 'waveguide', HybridParams
     dividers: 0,
     wallMm: 9,
     rounding: 0.9,
+    construction: 'full',
     legs: 6,
     throatRatio: 1,
     rearChamberL: 0,
@@ -162,6 +166,7 @@ export const HYBRID_PRESETS: Record<'sub' | 'living' | 'waveguide', HybridParams
     dividers: 0,
     wallMm: 7.5,
     rounding: 1,
+    construction: 'full',
     legs: 1,
     throatRatio: 1,
     rearChamberL: 0,
@@ -200,6 +205,13 @@ export interface Geometry {
   holes: Pt[][];
   /** rectangles of open space each plate spans (for resonance checks) */
   spans: Rect[];
+  construction: 'full' | 'bends';
+  /** 'bends' construction: the printed end-cap regions… */
+  caps: Rect[];
+  /** …and the plywood strips between them (per core) */
+  strips: Strip[];
+  /** sealed empty space boxed in by plywood (not printed) */
+  dead: Rect[];
   labels: { x: number; y: number; text: string }[];
   driver: { x: number; y: number; dia: number; face: 'front' | 'internal' };
   /** path along the horn / line / port, start → exit: cumulative length (mm) and area (mm²) */
@@ -209,6 +221,18 @@ export interface Geometry {
   stats: { label: string; value: string }[];
   fits: boolean;
   warnings: string[];
+}
+
+export interface Strip {
+  name: string;
+  /** where it sits in the profile (mm) */
+  rect: Rect;
+  lengthMm: number;
+  thickMm: number;
+  /** across the core (= printed core thickness) */
+  widthMm: number;
+  qty: number;
+  note?: string;
 }
 
 export function pointInPoly(poly: Pt[], x: number, y: number) {
@@ -249,7 +273,7 @@ function dedupe(poly: Pt[]) {
  * Convex solid corners (wall tips, mouth lips, outer corners) get radius
  * `convex(edgeMin)`; concave ones (inside bends, chamber corners) `concave(edgeMin)`.
  */
-function fillet(poly0: Pt[], convexR: (minEdge: number, p: Pt) => number, concaveR: (minEdge: number) => number): Pt[] {
+function fillet(poly0: Pt[], convexR: (minEdge: number, p: Pt) => number, concaveR: (minEdge: number, p: Pt) => number): Pt[] {
   const poly = dedupe(poly0);
   const n = poly.length;
   const ccw = signedArea(poly) > 0;
@@ -270,7 +294,7 @@ function fillet(poly0: Pt[], convexR: (minEdge: number, p: Pt) => number, concav
       continue;
     }
     const minEdge = Math.min(la, lb);
-    let r = convex ? convexR(minEdge, P) : concaveR(minEdge);
+    let r = convex ? convexR(minEdge, P) : concaveR(minEdge, P);
     // the tangent points must stay on the edges (leave room for the neighbour's fillet)
     const dMax = 0.5 * minEdge * 0.98;
     let d = r / Math.tan(phi / 2);
@@ -412,11 +436,18 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
   const k = Math.max(0, Math.min(1, p.rounding));
   const outerR = 25 * k;
   // solid-corner rounding: wall tips become half-round, lips/outer corners flare, bends sweep
+  let bends = p.construction === 'bends' && p.type !== 'waveguide';
+  let capsForFillet: Rect[] = [];
+  const inCaps = (P: Pt) => !bends || capsForFillet.some((c) => P[0] >= c.x0 - 0.5 && P[0] <= c.x1 + 0.5 && P[1] >= c.y0 - 0.5 && P[1] <= c.y1 + 0.5);
   const convex = (minEdge: number, P: Pt) => {
+    if (!inCaps(P)) return 0; // plywood corners stay square
     const onOuter = (P[0] < 1 || P[0] > W - 1) && (P[1] < 1 || P[1] > H - 1);
     return onOuter ? outerR : k * Math.min(t * 1.5, minEdge / 2);
   };
-  const concave = (minEdge: number) => k * 0.5 * minEdge * 0.95;
+  const concave = (minEdge: number, P: Pt) => (inCaps(P) ? k * 0.5 * minEdge * 0.95 : 0);
+  let gapsUsed: number[] = [];
+  let hornInfo: { xDrv: number; tcFront: number; tcBot: number } | null = null;
+  let voidTop = 0;
   const base = { W, H, E, Etot, cores, coreMm, wallMm: t };
 
   if (p.type === 'waveguide') {
@@ -446,6 +477,10 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     warnings.push('Waveguides are geometry-only here: their frequency response needs the compression driver/tweeter’s own data, so they are not fed into the maps.');
     return {
       ...base,
+      construction: 'full',
+      caps: [],
+      strips: [],
+      dead: [],
       core,
       holes,
       spans: [{ x0: t, x1: W, y0: cy - mouthW / 2, y1: cy + mouthW / 2 }],
@@ -492,7 +527,7 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     xStart = xDrv + t; // driver wall front face; leg 0 starts here over the throat chamber
     xa = xDrv + t + tcD + t;
     d0 = 1;
-    holes.push(roundedRect(t, t, t + cw, H - t, 40 * k));
+    holes.push(roundedRect(t, t, t + cw, H - t, bends ? 0 : 40 * k));
     chambers.push({ label: 'Rear chamber', volumeL: (cw * inner * E) / 1e6 });
     spans.push({ x0: t, x1: t + cw, y0: t, y1: H - t, label: 'rear chamber' });
     labels.push({ x: t + cw / 2, y: H / 2, text: 'rear chamber' });
@@ -530,6 +565,7 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     }
     legs = stack(hs);
     const gaps = gapsFor(hs, legLen);
+    gapsUsed = gaps;
     ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
     // merge the throat chamber (in front of the driver, below leg 0) into the channel
     const tcTop = legs[0].yb;
@@ -540,6 +576,7 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     B.unshift([tcFront, tcBot], [xStart, tcBot]);
     A[0] = [xStart, legs[0].yt];
     chambers.push({ label: 'Throat chamber', volumeL: (tcD * (tcTop - tcBot) * E) / 1e6 });
+    hornInfo = { xDrv, tcFront, tcBot };
     labels.push({ x: xStart + tcD / 2, y: (tcTop + tcBot) / 2, text: 'throat chamber' });
     driver = { x: xDrv + t / 2, y: drvY, dia, face: 'internal' };
     L = Lsum + hs.slice(0, -1).reduce((a, h, i) => a + bendLen(h, hs[i + 1]) - (gaps[i] + t), 0);
@@ -578,6 +615,7 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     if (spare > 40) {
       // leftover height becomes a sealed void (no filament): fill with sand or shorten the cabinet
       holes.push(roundedRect(t, t, W - t, t + spare - t, 30 * k));
+      voidTop = t + spare - t;
       labels.push({ x: W / 2, y: t + (spare - t) / 2, text: 'sealed void (sand)' });
       stats.push({ label: 'Spare height', value: `${spare.toFixed(0)} mm at the bottom — a sealed void (fill with sand for stability), or shorten the cabinet by that much` });
       used = H;
@@ -590,6 +628,7 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     }
     legs = stack(hs);
     const gaps = gapsFor(hs, legLen);
+    gapsUsed = gaps;
     ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
     driver = { x: W - t / 2, y: (legs[0].yt + legs[0].yb) / 2, dia, face: 'front' };
     for (let i = 0; i < N; i++) {
@@ -620,6 +659,7 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     const hs = [Math.max(boxH, 20), ...Array.from({ length: nSlot }, () => p.slotMm)];
     legs = stack(hs);
     const gaps = gapsFor(hs, legLen).map((g, i) => (i === 0 ? Math.min(g, p.slotMm * 1.6) : g));
+    gapsUsed = gaps;
     ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
     driver = { x: W - t / 2, y: (legs[0].yt + legs[0].yb) / 2, dia, face: 'front' };
     const Vb = (legLen * boxH * E) / 1e6 - (d.displacementL ?? 0.5);
@@ -640,9 +680,61 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
   }
   for (const lg of legs) spans.push({ x0: xa, x1: xb, y0: lg.yb, y1: lg.yt });
   const last = legs[legs.length - 1];
+
+  // ---- printed bends + plywood straight walls ------------------------------
+  const caps: Rect[] = [];
+  const strips: Strip[] = [];
+  const dead: Rect[] = [];
+  if (bends) {
+    const socket = 25; // plywood strips slot this far into the printed caps
+    let gR = 0;
+    let gL = 0;
+    gapsUsed.forEach((g, i) => {
+      const di = i % 2 === 0 ? d0 : -d0;
+      if (di > 0) gR = Math.max(gR, g);
+      else gL = Math.max(gL, g);
+    });
+    const front: Rect = { x0: Math.max(0, xb - gR - socket), x1: W, y0: 0, y1: H, label: 'front cap (printed)' };
+    const back: Rect = hornInfo
+      ? { x0: xa - t, x1: xa + gL + socket, y0: 0, y1: H, label: 'back cap (printed)' }
+      : { x0: 0, x1: xa + gL + socket, y0: 0, y1: H, label: 'back cap (printed)' };
+    if (back.x1 > front.x0 - 60) {
+      warnings.push('The legs are too short for a plywood middle section — this design is printed whole.');
+      bends = false;
+    } else {
+      caps.push(back, front);
+      const x0 = back.x1 - socket;
+      const x1 = front.x0 + socket;
+      const mid = (name: string, y0: number, y1: number, note?: string) =>
+        strips.push({ name, rect: { x0, x1, y0, y1 }, lengthMm: x1 - x0, thickMm: t, widthMm: coreMm, qty: cores, note: note ?? `ends slot ${socket} mm into both printed caps` });
+      mid('Top wall', H - t, H);
+      mid('Bottom wall', 0, t);
+      for (let i = 0; i < legs.length - 1; i++) mid(`Fold wall ${i + 1}`, legs[i].yb - t, legs[i].yb);
+      if (voidTop > 0) mid('Wall above the sand void', voidTop, voidTop + t);
+      if (hornInfo) {
+        const { xDrv, tcFront, tcBot } = hornInfo;
+        const box = (name: string, r: Rect, len: number, note?: string) => strips.push({ name, rect: r, lengthMm: len, thickMm: t, widthMm: coreMm, qty: cores, note });
+        box('Back wall', { x0: 0, x1: t, y0: 0, y1: H }, H);
+        box('Driver baffle (internal)', { x0: xDrv, x1: xDrv + t, y0: t, y1: H - t }, H - 2 * t, `driver cut-out Ø${d.cutoutDiaMm} mm; seals the rear chamber`);
+        box('Rear chamber top', { x0: t, x1: xDrv, y0: H - t, y1: H }, xDrv - t);
+        box('Rear chamber bottom', { x0: t, x1: xDrv, y0: 0, y1: t }, xDrv - t);
+        if (back.x0 - (xDrv + t) > 10) {
+          box('Top wall (over throat chamber)', { x0: xDrv + t, x1: back.x0, y0: H - t, y1: H }, back.x0 - xDrv - t + socket, `slots ${socket} mm into the back cap`);
+          box('Bottom wall (under throat chamber)', { x0: xDrv + t, x1: back.x0, y0: 0, y1: t }, back.x0 - xDrv - t + socket, `slots ${socket} mm into the back cap`);
+        }
+        box('Throat chamber floor', { x0: xDrv + t, x1: tcFront, y0: tcBot - t, y1: tcBot }, tcFront - xDrv - t, 'closes the throat chamber below the driver');
+        if (tcBot - 2 * t > 20) dead.push({ x0: xDrv + t, x1: back.x0, y0: t, y1: tcBot - t, label: 'sealed empty space' });
+      }
+    }
+  }
+  capsForFillet = caps;
   const core = fillet(coreWithChannel(W, H, A, B), convex, concave);
   return {
     ...base,
+    construction: bends ? 'bends' : 'full',
+    caps,
+    strips,
+    dead,
     core,
     holes,
     spans,
@@ -849,10 +941,12 @@ export interface Segment {
 export interface PrintPlan {
   rotated: boolean;
   usable: [number, number];
-  cutsX: number[];
-  cutsY: number[];
+  /** cut lines in profile coordinates (mm) */
+  cutLines: { x1: number; y1: number; x2: number; y2: number }[];
   /** layer splits inside each core (mm from that core's bottom) */
   cutsZ: number[];
+  /** the regions that are printed (whole profile, or the end-caps) */
+  regions: Rect[];
   segments: Segment[];
   keys: { x: number; y: number }[];
   totalGrams: number;
@@ -870,49 +964,18 @@ export function isAir(g: Geometry, x: number, y: number) {
 export function planPrint(g: Geometry, pr: Printer): PrintPlan {
   const ux = pr.bedX - 2 * pr.margin;
   const uy = pr.bedY - 2 * pr.margin;
-  const tiles = (a: number, b: number) => Math.ceil(g.W / a) * Math.ceil(g.H / b);
-  const rotated = tiles(uy, ux) < tiles(ux, uy);
-  const [ax, ay] = rotated ? [uy, ux] : [ux, uy];
-  const nx = Math.ceil(g.W / ax);
-  const ny = Math.ceil(g.H / ay);
+  const regions: Rect[] = g.caps.length ? g.caps : [{ x0: 0, x1: g.W, y0: 0, y1: g.H }];
   const nz = Math.ceil(g.coreMm / pr.maxZ);
-  // put cuts through solid walls where possible (stronger joints, keys have material to bite)
-  const snap = (v: number, along: 'x' | 'y') => {
-    const n0 = along === 'x' ? nx : ny;
-    const len0 = along === 'x' ? g.W : g.H;
-    const lim = along === 'x' ? ax : ay;
-    const win = Math.max(0, Math.min(40, Math.floor((lim - len0 / n0) / 2)));
-    let best = v;
-    let bestScore = -1;
-    for (let dv = -win; dv <= win; dv += 2) {
-      const c = v + dv;
-      let solid = 0;
-      for (let i = 0; i <= 60; i++) {
-        const q = ((along === 'x' ? g.H : g.W) * i) / 60;
-        if (!(along === 'x' ? isAir(g, c, q) : isAir(g, q, c))) solid++;
-      }
-      if (solid > bestScore || (solid === bestScore && Math.abs(dv) < Math.abs(best - v))) {
-        bestScore = solid;
-        best = c;
-      }
-    }
-    return best;
-  };
-  const cutsX = Array.from({ length: nx - 1 }, (_, i) => snap((g.W * (i + 1)) / nx, 'x'));
-  const cutsY = Array.from({ length: ny - 1 }, (_, i) => snap((g.H * (i + 1)) / ny, 'y'));
   const cutsZ = Array.from({ length: nz - 1 }, (_, i) => (g.coreMm * (i + 1)) / nz);
-  const xs = [0, ...cutsX, g.W];
-  const ys = [0, ...cutsY, g.H];
   const zs = [0, ...cutsZ, g.coreMm];
-  // density map: the slicer prints solid perimeters near every surface and sparse
-  // infill deeper inside thick blobs (filleted corners, the block under a chamber…)
+
+  // density map over the profile: solid perimeters near surfaces, sparse infill inside blobs
   const step = 5;
   const gx = Math.ceil(g.W / step);
   const gy = Math.ceil(g.H / step);
   const solid = new Uint8Array(gx * gy);
   for (let j = 0; j < gy; j++)
     for (let i = 0; i < gx; i++) solid[j * gx + i] = isAir(g, (i + 0.5) * step, (j + 0.5) * step) ? 0 : 1;
-  // chamfer distance (mm) from each solid cell to the nearest air / outside
   const INF = 1e9;
   const dist = new Float64Array(gx * gy);
   for (let q = 0; q < gx * gy; q++) dist[q] = solid[q] ? INF : 0;
@@ -920,61 +983,99 @@ export function planPrint(g: Geometry, pr: Printer): PrintPlan {
   for (let j = 0; j < gy; j++)
     for (let i = 0; i < gx; i++) {
       const q = j * gx + i;
-      if (!solid[q]) continue;
-      dist[q] = Math.min(dist[q], at(i - 1, j) + step, at(i, j - 1) + step, at(i - 1, j - 1) + step * 1.414, at(i + 1, j - 1) + step * 1.414);
+      if (solid[q]) dist[q] = Math.min(dist[q], at(i - 1, j) + step, at(i, j - 1) + step, at(i - 1, j - 1) + step * 1.414, at(i + 1, j - 1) + step * 1.414);
     }
   for (let j = gy - 1; j >= 0; j--)
     for (let i = gx - 1; i >= 0; i--) {
       const q = j * gx + i;
-      if (!solid[q]) continue;
-      dist[q] = Math.min(dist[q], at(i + 1, j) + step, at(i, j + 1) + step, at(i + 1, j + 1) + step * 1.414, at(i - 1, j + 1) + step * 1.414);
+      if (solid[q]) dist[q] = Math.min(dist[q], at(i + 1, j) + step, at(i, j + 1) + step, at(i + 1, j + 1) + step * 1.414, at(i - 1, j + 1) + step * 1.414);
     }
   const shell = Math.max(g.wallMm / 2 + pr.lineWidth, 3 * pr.lineWidth);
-  const dens = (q: number) => (!solid[q] ? 0 : dist[q] - step / 2 <= shell ? 0.95 : 0.15);
-  let filled = 0;
+  // deep inside thick corners: printed hollow with a few ribs (the plates close the pocket)
+  const dens = (q: number) => (!solid[q] ? 0 : dist[q] - step / 2 <= shell ? 0.95 : 0.05);
   let solidCells = 0;
-  for (let q = 0; q < gx * gy; q++) {
-    filled += dens(q);
-    if (solid[q]) solidCells++;
-  }
-  const solidFraction = solidCells / (gx * gy);
+  for (let q = 0; q < gx * gy; q++) if (solid[q]) solidCells++;
   const massIn = (x0: number, x1: number, y0: number, y1: number, zMm: number) => {
     let m = 0;
-    for (let j = Math.floor(y0 / step); j < Math.min(gy, Math.ceil(y1 / step)); j++)
-      for (let i = Math.floor(x0 / step); i < Math.min(gx, Math.ceil(x1 / step)); i++) m += dens(j * gx + i);
+    for (let j = Math.max(0, Math.floor(y0 / step)); j < Math.min(gy, Math.ceil(y1 / step)); j++)
+      for (let i = Math.max(0, Math.floor(x0 / step)); i < Math.min(gx, Math.ceil(x1 / step)); i++) m += dens(j * gx + i);
     return (m * step * step * zMm * pr.filamentDensity) / 1000;
   };
-  void filled;
+  const solidAlong = (x0: number, y0: number, x1: number, y1: number) => {
+    let n = 0;
+    for (let i = 0; i <= 60; i++) if (!isAir(g, x0 + ((x1 - x0) * i) / 60, y0 + ((y1 - y0) * i) / 60)) n++;
+    return n;
+  };
+
+  const cutLines: PrintPlan['cutLines'] = [];
   const segments: Segment[] = [];
-  for (let c = 0; c < g.cores; c++)
-    for (let k = 0; k < zs.length - 1; k++)
-      for (let j = 0; j < ys.length - 1; j++)
-        for (let i = 0; i < xs.length - 1; i++) {
-          const grams = massIn(xs[i], xs[i + 1], ys[j], ys[j + 1], zs[k + 1] - zs[k]);
-          const w = xs[i + 1] - xs[i];
-          const h = ys[j + 1] - ys[j];
-          segments.push({
-            id: `${g.cores > 1 ? `${c + 1}·` : ''}${String.fromCharCode(65 + j)}${i + 1}${zs.length > 2 ? `·L${k + 1}` : ''}`,
-            tile: `${String.fromCharCode(65 + j)}${i + 1}`,
-            core: c,
-            x0: xs[i],
-            x1: xs[i + 1],
-            y0: ys[j],
-            y1: ys[j + 1],
-            z0: zs[k],
-            z1: zs[k + 1],
-            bedW: rotated ? h : w,
-            bedH: rotated ? w : h,
-            grams,
-          });
-        }
-  // alignment keys: where a seam runs through solid, one key per ~80 mm of solid
   const keys: PrintPlan['keys'] = [];
-  const seam = (fixed: number, along: 'x' | 'y') => {
-    const len = along === 'x' ? g.H : g.W;
+  let anyRotated = false;
+  regions.forEach((R, ri) => {
+    const RW = R.x1 - R.x0;
+    const RH = R.y1 - R.y0;
+    const tiles = (a: number, b: number) => Math.ceil(RW / a) * Math.ceil(RH / b);
+    const rotated = tiles(uy, ux) < tiles(ux, uy);
+    anyRotated ||= rotated;
+    const [ax, ay] = rotated ? [uy, ux] : [ux, uy];
+    const nx = Math.ceil(RW / ax);
+    const ny = Math.ceil(RH / ay);
+    // put cuts through solid walls where possible (stronger joints, keys have material to bite)
+    const snap = (v: number, along: 'x' | 'y') => {
+      const n0 = along === 'x' ? nx : ny;
+      const len0 = along === 'x' ? RW : RH;
+      const lim = along === 'x' ? ax : ay;
+      const win = Math.max(0, Math.min(40, Math.floor((lim - len0 / n0) / 2)));
+      let best = v;
+      let bestScore = -1;
+      for (let dv = -win; dv <= win; dv += 2) {
+        const c = v + dv;
+        const sc = along === 'x' ? solidAlong(c, R.y0, c, R.y1) : solidAlong(R.x0, c, R.x1, c);
+        if (sc > bestScore || (sc === bestScore && Math.abs(dv) < Math.abs(best - v))) {
+          bestScore = sc;
+          best = c;
+        }
+      }
+      return best;
+    };
+    const cx = Array.from({ length: nx - 1 }, (_, i) => snap(R.x0 + (RW * (i + 1)) / nx, 'x'));
+    const cy = Array.from({ length: ny - 1 }, (_, i) => snap(R.y0 + (RH * (i + 1)) / ny, 'y'));
+    cx.forEach((c) => cutLines.push({ x1: c, y1: R.y0, x2: c, y2: R.y1 }));
+    cy.forEach((c) => cutLines.push({ x1: R.x0, y1: c, x2: R.x1, y2: c }));
+    const xs = [R.x0, ...cx, R.x1];
+    const ys = [R.y0, ...cy, R.y1];
+    const prefix = regions.length > 1 ? (ri === 0 ? 'Back ' : 'Front ') : '';
+    for (let c = 0; c < g.cores; c++)
+      for (let kz = 0; kz < zs.length - 1; kz++)
+        for (let j = 0; j < ys.length - 1; j++)
+          for (let i = 0; i < xs.length - 1; i++) {
+            const w = xs[i + 1] - xs[i];
+            const h = ys[j + 1] - ys[j];
+            const tile = `${prefix}${String.fromCharCode(65 + j)}${i + 1}`;
+            segments.push({
+              id: `${g.cores > 1 ? `${c + 1}·` : ''}${tile}${zs.length > 2 ? `·L${kz + 1}` : ''}`,
+              tile,
+              core: c,
+              x0: xs[i],
+              x1: xs[i + 1],
+              y0: ys[j],
+              y1: ys[j + 1],
+              z0: zs[kz],
+              z1: zs[kz + 1],
+              bedW: rotated ? h : w,
+              bedH: rotated ? w : h,
+              grams: massIn(xs[i], xs[i + 1], ys[j], ys[j + 1], zs[kz + 1] - zs[kz]),
+            });
+          }
+  });
+  // alignment keys: where a seam runs through solid, one key per ~80 mm of solid
+  for (const L of cutLines) {
+    const len = Math.hypot(L.x2 - L.x1, L.y2 - L.y1);
     let run0 = -1;
     for (let q = 0; q <= len; q += 2) {
-      const sld = q > 0 && q < len && !(along === 'x' ? isAir(g, fixed, q) : isAir(g, q, fixed));
+      const x = L.x1 + ((L.x2 - L.x1) * q) / len;
+      const y = L.y1 + ((L.y2 - L.y1) * q) / len;
+      const sld = q > 0 && q < len && !isAir(g, x, y);
       if (sld && run0 < 0) run0 = q;
       if (!sld && run0 >= 0) {
         const run = q - run0;
@@ -982,29 +1083,27 @@ export function planPrint(g: Geometry, pr: Printer): PrintPlan {
           const n = Math.max(1, Math.floor(run / 80));
           for (let m = 0; m < n; m++) {
             const v = run0 + (run * (m + 0.5)) / n;
-            keys.push(along === 'x' ? { x: fixed, y: v } : { x: v, y: fixed });
+            keys.push({ x: L.x1 + ((L.x2 - L.x1) * v) / len, y: L.y1 + ((L.y2 - L.y1) * v) / len });
           }
         }
         run0 = -1;
       }
     }
-  };
-  cutsX.forEach((c) => seam(c, 'x'));
-  cutsY.forEach((c) => seam(c, 'y'));
+  }
   const totalGrams = segments.reduce((a, s) => a + s.grams, 0);
   const volMm3 = (totalGrams / pr.filamentDensity) * 1000;
   const hours = ((volMm3 / Math.max(pr.flow, 1)) * 1.3) / 3600; // +30 % travel/acceleration
   return {
-    rotated,
+    rotated: anyRotated,
     usable: [ux, uy],
-    cutsX,
-    cutsY,
+    cutLines,
     cutsZ,
+    regions,
     segments,
     keys,
     totalGrams,
     hours,
-    solidFraction,
+    solidFraction: solidCells / (gx * gy),
     layers: Math.ceil(g.coreMm / Math.max(pr.layerH, 0.05)),
   };
 }
@@ -1059,14 +1158,15 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
   // ---- printed walls spanning between plates/dividers (the floppiest part) ----
   const tw = p.wallMm / 1000;
   const span = g.coreMm / 1000;
-  const Dw = (PETG.E * tw ** 3) / (12 * (1 - PETG.nu ** 2));
-  const fWall = (22.37 / (2 * Math.PI)) * Math.sqrt(Dw / (PETG.rho * tw)) / (span * span); // clamped strip
+  const wm = g.construction === 'bends' ? plate : PETG;
+  const Dw = (wm.E * tw ** 3) / (12 * (1 - wm.nu ** 2));
+  const fWall = (22.37 / (2 * Math.PI)) * Math.sqrt(Dw / (wm.rho * tw)) / (span * span); // clamped strip
   out.push({
     level: fWall < lim.wallBad ? 'bad' : fWall < lim.wallWarn ? 'warn' : 'ok',
-    title: `Printed walls flex at ≈ ${fWall.toFixed(0)} Hz (span ${g.coreMm.toFixed(0)} mm between plates)`,
+    title: `${g.construction === 'bends' ? 'Plywood fold walls' : 'Printed walls'} flex at ≈ ${fWall.toFixed(0)} Hz (span ${g.coreMm.toFixed(0)} mm between plates)`,
     body:
       fWall < lim.wallWarn
-        ? `Walls glued between two plates ${g.coreMm.toFixed(0)} mm apart act like a ${p.wallMm} mm PETG strip clamped on both edges. ${fWall < lim.wallBad ? `That is inside the band this cabinet plays (up to ~${passTop} Hz) — they will buzz and lose output.` : `That is above the ~${passTop} Hz this cabinet plays, but close enough that loud bass can excite it.`} Fixes: add a plywood divider (halving the span raises this ×4), thicken walls (×1.5 thickness ≈ ×1.5 frequency), or curve the walls (an arch is far stiffer than a flat strip).`
+        ? `Walls glued between two plates ${g.coreMm.toFixed(0)} mm apart act like a ${p.wallMm} mm ${g.construction === 'bends' ? 'plywood' : 'PETG'} strip clamped on both edges. ${fWall < lim.wallBad ? `That is inside the band this cabinet plays (up to ~${passTop} Hz) — they will buzz and lose output.` : `That is above the ~${passTop} Hz this cabinet plays, but close enough that loud bass can excite it.`} Fixes: add a plywood divider (halving the span raises this ×4), thicken walls (×1.5 thickness ≈ ×1.5 frequency), or curve the walls (an arch is far stiffer than a flat strip).`
         : `Comfortably above the ~${passTop} Hz this cabinet plays. Curved bends add stiffness on top of this.`,
   });
 
@@ -1100,6 +1200,13 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
       body: `Leaks whistle and cost bass. Seal the inside of every chamber and channel with 2 coats of thin epoxy (or a brush-on polyurethane), and seal the plate joints (below). Test: block the mouth/port, push the cone gently — it should come back slowly.`,
     });
 
+  if (g.construction === 'bends')
+    out.push({
+      level: 'ok',
+      title: `Printed bends + plywood: ${g.strips.reduce((a, st) => a + st.qty, 0)} plywood strips, 2 printed caps per core`,
+      body: `Print the two end-caps with ${p.wallMm} mm slots (+0.4 mm clearance) where the plywood strips go in; ${(p.wallMm / pr.lineWidth).toFixed(0)} lines either side of each slot. Dry-fit the strips into one cap, then the other, glue with PU construction adhesive (it fills the print roughness and seals), and check the stack is square before the plates go on. Cut all the strips of one width at one fence setting — they must all be exactly the core thickness (${g.coreMm.toFixed(0)} mm).`,
+    });
+
   // ---- plates to core ----
   const perim = 2 * (g.W + g.H);
   const bolts = Math.ceil(perim / 150) * g.cores + g.spans.length;
@@ -1114,7 +1221,7 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
     out.push({
       level: 'warn',
       title: `Big print: ~${(plan.totalGrams / 1000).toFixed(0)} kg of filament, ~${plan.hours.toFixed(0)} h at ${pr.flow} mm³/s`,
-      body: 'Estimate assumes solid perimeters near every surface and 15 % infill inside thick corners. To cut it down: print only the complex parts (bends, throat, mouth) and use plywood strips for long straight walls between the plates; lower the wall count where the flex check allows; or build one cabinet and measure before printing four.',
+      body: 'Estimate assumes solid walls near every surface and thick corners printed hollow with a few ribs (the plates close those pockets — seal them like the rest). To cut it down: print only the complex parts (bends, throat, mouth) and use plywood strips for long straight walls between the plates; lower the wall count where the flex check allows; or build one cabinet and measure before printing four.',
     });
   out.push({
     level: plan.segments.length > 40 ? 'warn' : 'ok',

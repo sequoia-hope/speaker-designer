@@ -114,6 +114,10 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   await expect(page.getByText(/Horn path length/)).toBeVisible();
   await page.getByRole('button', { name: 'Print layout' }).click();
   await expect(page.locator('.stat', { hasText: 'Segments' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Plywood strips (per cabinet)' })).toBeVisible();
+  await page.getByRole('button', { name: 'Fully printed core' }).click();
+  await expect(page.getByRole('heading', { name: 'Plywood strips (per cabinet)' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Printed bends + plywood walls' }).click();
   await page.getByRole('button', { name: 'Assembled' }).click();
   await page.getByLabel('Use this horn for the outdoor subs').check();
   await page.getByRole('button', { name: /Living-room speaker/ }).click();

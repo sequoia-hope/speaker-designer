@@ -2,6 +2,11 @@
 
 A browser app for planning DIY loudspeakers and a living-room sound system, plus an experimental acoustics "Lab".
 
+**▶ Live app: https://sequoia-hope.github.io/speaker-designer/** — works on phones and desktops; nothing to install.
+(The Lab is at https://sequoia-hope.github.io/speaker-designer/#lab.)
+
+The site is the committed build (`index.html` + `viewer-assets/` + `simulations/` + `wasm/` at the repo root), served by GitHub Pages from `main`. After changing anything in `viewer/src`, rebuild with `cd viewer && npx vite build` and commit the output.
+
 ## Home Hi-Fi (the default view)
 
 Mobile-first planner, open at `#home` (`viewer/src/home/`):
@@ -9,6 +14,7 @@ Mobile-first planner, open at `#home` (`viewer/src/home/`):
 - **Room** — room shape (incl. bay windows / openings), system layouts (2.0 → 5.1.2, and a guests/party layout with delayed fills), placement optimiser, and maps of bass evenness (rectangular-room modal model), loudness coverage, stereo-image width, fill **arrival timing** (precedence/Haas) and **interference** (coherent sum with delays, animated).
 - **Speakers** — 11 designs (monitors, MTM, tower, centre, compact surround/height, full-range, subs) built from real driver datasheets, in 3D with explode / cut-away / tap-to-identify.
 - **Build** — joinery-consistent cut lists, baffle & panel drawings, router circle-jig settings, sheet nesting, stands, and a step-by-step shop checklist.
+- **Print** — hybrid 3D-printed + plywood cabinets (folded horn, transmission line, folded slot port, waveguide) with organic rounded shapes, fat-nozzle print settings, a "printed bends + plywood walls" option, print segmentation for your bed, build checks, and a simulated response fed into the room and outdoor maps.
 - **Parts** — whole-system bill of materials with Parts Express part numbers (prices dated in `viewer/src/home/catalog.ts`), or a kit path.
 
 The original computational "Lab" (below) is still available at `#lab`; see the Learn tab for which of its outputs are reliable.
