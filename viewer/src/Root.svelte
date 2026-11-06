@@ -25,10 +25,17 @@
     route = { mode: 'home', tab: route.tab };
   }
   window.addEventListener('popstate', () => (route = parse()));
+  window.addEventListener('hashchange', () => {
+    const r = parse();
+    // HomeStudio keeps the hash in sync itself (replaceState); only react to real navigation
+    if (r.mode !== route.mode || (r.mode === 'home' && r.tab !== route.tab)) route = r;
+  });
 </script>
 
 {#if route.mode === 'home'}
-  <HomeStudio onOpenLab={openLab} initialTab={route.tab} />
+  {#key route.tab}
+    <HomeStudio onOpenLab={openLab} initialTab={route.tab} />
+  {/key}
 {:else if LabApp}
   <LabApp onHome={openHome} />
 {:else}
