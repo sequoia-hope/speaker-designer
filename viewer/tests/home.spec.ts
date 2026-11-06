@@ -107,8 +107,9 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   await page.getByRole('button', { name: /Living room/ }).first().click();
   await expect(page.getByText('Furniture & zones')).toBeVisible();
 
-  // Print tab: hybrid printed + wood cabinets, fed into the outdoor maps
-  await nav.getByRole('button', { name: /Print/ }).click();
+  // Print tab: reachable from the Build tab's picker; hybrid printed + wood cabinets
+  await nav.getByRole('button', { name: /Build/ }).click();
+  await page.getByLabel('Design to build').selectOption('print:sub');
   await expect(page.getByRole('heading', { name: 'Printed horn sub' })).toBeVisible();
   await expect(page.getByText(/Horn path length/)).toBeVisible();
   await page.getByRole('button', { name: 'Print layout' }).click();

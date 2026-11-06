@@ -24,6 +24,10 @@
     history.replaceState(null, '', `#home/${t}`);
     scroller?.scrollTo({ top: 0, behavior: 'instant' });
   }
+  function openPrint(which: 'sub' | 'living') {
+    home.hybrid.edit = which;
+    go('print');
+  }
   function openDesign(id: string, t: Tab = 'speaker') {
     home.activeDesign = id;
     go(t);
@@ -108,9 +112,9 @@
             tweeterFromTopMm={mains.plan.holes[0]?.yMm ?? 60}
           />
         {:else if tab === 'speaker'}
-          <SpeakerTab {plan} {woofer} {tweeter} onGoBuild={() => go('build')} />
+          <SpeakerTab {plan} {woofer} {tweeter} onGoBuild={() => go('build')} onOpenPrint={openPrint} />
         {:else if tab === 'build'}
-          <BuildTab {plan} {woofer} {tweeter} />
+          <BuildTab {plan} {woofer} {tweeter} onOpenPrint={openPrint} />
         {:else if tab === 'print'}
           <HybridTab />
         {:else if tab === 'parts'}

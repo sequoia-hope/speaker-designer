@@ -7,7 +7,12 @@
   import Speaker3D from './Speaker3D.svelte';
   import PanelDrawing from './PanelDrawing.svelte';
 
-  let { plan, woofer, tweeter }: { plan: BuildPlan; woofer: DriverInfo; tweeter: DriverInfo | null } = $props();
+  let { plan, woofer, tweeter, onOpenPrint }: { plan: BuildPlan; woofer: DriverInfo; tweeter: DriverInfo | null; onOpenPrint: (w: 'sub' | 'living') => void } = $props();
+  function pick(e: Event) {
+    const v = (e.target as HTMLSelectElement).value;
+    if (v === 'print:sub' || v === 'print:living') onOpenPrint(v === 'print:sub' ? 'sub' : 'living');
+    else home.activeDesign = v;
+  }
 
   const cur = $derived(home.designs[home.activeDesign]);
   const box = $derived(plan.box);
@@ -55,10 +60,21 @@
 <section class="card">
   <label class="pick">
     <span>Building</span>
-    <select bind:value={home.activeDesign} aria-label="Design to build">
-      {#each DESIGNS as d}<option value={d.id}>{d.name} — {d.short}</option>{/each}
+    <select value={home.activeDesign} onchange={pick} aria-label="Design to build">
+      <optgroup label="Plywood (this tab)">
+        {#each DESIGNS as d}<option value={d.id}>{d.name} — {d.short}</option>{/each}
+      </optgroup>
+      <optgroup label="3D-printed + plywood hybrids (Print tab)">
+        <option value="print:sub">Printed horn sub (outdoor)</option>
+        <option value="print:living">Printed transmission line / slot port (living room)</option>
+      </optgroup>
     </select>
   </label>
+  <div class="printnote">
+    🧩 3D-printed hybrid cabinets have their own tab:
+    <button class="linklike" onclick={() => onOpenPrint('sub')}>printed horn sub</button> ·
+    <button class="linklike" onclick={() => onOpenPrint('living')}>printed living-room speaker</button>
+  </div>
   <h2>Woodworking plan</h2>
   <p class="sub">
     {cur.quantity} × {box.alignment.kind} box for the {woofer.brand} {woofer.model}{tweeter ? ` + ${tweeter.model}` : ''},
@@ -336,6 +352,23 @@
 </div>
 
 <style>
+  .printnote {
+    font-size: 13px;
+    color: var(--text-2);
+    background: var(--bg-2);
+    border-radius: 9px;
+    padding: 7px 10px;
+    margin-bottom: 10px;
+  }
+  .linklike {
+    background: none;
+    border: none;
+    color: var(--accent);
+    padding: 0;
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
   .pick {
     display: flex;
     gap: 8px;
@@ -346,6 +379,9 @@
   }
   .pick select {
     flex: 1;
+    min-width: 0;
+    width: 100%;
+    text-overflow: ellipsis;
     background: var(--bg-0);
     color: var(--text-0);
     border: 1px solid var(--border);

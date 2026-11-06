@@ -7,11 +7,12 @@
   import { MATERIALS, type BuildPlan } from './speakerBuild';
   import { SPEED_OF_SOUND, fmtInFrac } from './roomAcoustics';
 
-  let { plan, woofer, tweeter, onGoBuild }: {
+  let { plan, woofer, tweeter, onGoBuild, onOpenPrint }: {
     plan: BuildPlan;
     woofer: DriverInfo;
     tweeter: DriverInfo | null;
     onGoBuild: () => void;
+    onOpenPrint: (w: 'sub' | 'living') => void;
   } = $props();
 
   $effect(() => {
@@ -117,6 +118,16 @@
         </div>
       </button>
     {/each}
+    <button class="gcard print" onclick={() => onOpenPrint('sub')}>
+      <div class="gname">🧩 Printed horn sub</div>
+      <div class="gshort">3D-printed folded horn + plywood sides</div>
+      <div class="gtags"><span class="tag">outdoor subs</span>{#if home.hybrid.useOutdoor}<span class="tag use">in use</span>{/if}</div>
+    </button>
+    <button class="gcard print" onclick={() => onOpenPrint('living')}>
+      <div class="gname">🧩 Printed line / port</div>
+      <div class="gshort">3D-printed transmission line or slot port</div>
+      <div class="gtags"><span class="tag">living-room mains</span>{#if home.hybrid.useLiving}<span class="tag use">in use</span>{/if}</div>
+    </button>
   </div>
   {#if preset}
     <p class="small" style="margin-top:10px">{preset.blurb}</p>
@@ -280,6 +291,9 @@
     color: var(--text-1);
     cursor: pointer;
     font: inherit;
+  }
+  .gcard.print {
+    border-style: dashed;
   }
   .gcard.on {
     border-color: var(--accent);
