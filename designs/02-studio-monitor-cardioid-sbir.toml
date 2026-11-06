@@ -1,0 +1,587 @@
+id = "02-studio-monitor-cardioid-sbir"
+title = "Cardioid-8C — Stereo Studio Monitor Pair Near Front Wall (SBIR Elimination)"
+category = "Studio Monitors"
+description = "Simulates a 60° equilateral stereo studio monitor pair placed 55 cm from the control-room front wall (y = -1.50 m), comparing an acoustic resistive-slot cardioid monitor against a conventional omnidirectional-bass monitor."
+design_notes = [
+    "The Studio SBIR Trap: At 55 cm front-wall offset, the rear-radiated bass wave bounces off the studio wall with a 1.1 m round-trip delay, creating a severe quarter-wave cancellation notch around 140–160 Hz at the mix chair.",
+    "Passive Acoustic Cardioid Slots: Flow-resistive side slots delay and invert the rear cone wave by 22 cm internal + exterior path, attenuating rear radiation toward the front wall by 10–14 dB across 90–350 Hz.",
+]
+
+[environment]
+temperature_k = 293.15
+pressure_pa = 101325.0
+relative_humidity = 0.5
+
+[settings]
+freq_min_hz = 24.0
+freq_max_hz = 18000.0
+num_freqs = 90
+small_signal_volts_rms = 2.83
+high_spl_volts_rms = 18.0
+enable_3d_bem = true
+field_bounds_m = [
+    -2.6,
+    2.6,
+    -1.5,
+    3.5,
+]
+field_grid_nx = 46
+field_grid_ny = 46
+listener_height_m = 1.2
+reference_mic_m = [
+    0.0,
+    0.95,
+    1.2,
+]
+
+[[drivers]]
+id = "alu_wf_85"
+name = '8.5" Anodized Alu-Cone Studio Woofer'
+category = "studio-lf"
+
+[drivers.small_signal]
+re_ohm = 5.6
+bl_t_m = 11.6
+mms_kg = 0.039
+cms_m_per_n = 0.00064
+creep_lambda = 0.018
+rms_n_s_m = 1.45
+sd_m2 = 0.024
+xmax_m = 0.0095
+xmech_m = 0.015
+pe_max_w = 250.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00065
+l2_h = 0.00045
+r2_ohm = 9.5
+
+[drivers.nonlinear]
+bl_poly = [
+    0.015,
+    -0.21,
+    -0.01,
+    -0.04,
+]
+kms_poly = [
+    -0.02,
+    0.28,
+    0.02,
+    0.18,
+]
+le_x_poly = [
+    -0.08,
+    0.03,
+]
+le_current_factor = 0.004
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "neo_mid_40"
+name = '4.0" Shorting-Ring Neodymium Midrange'
+category = "studio-mf"
+
+[drivers.small_signal]
+re_ohm = 5.8
+bl_t_m = 6.1
+mms_kg = 0.0046
+cms_m_per_n = 0.00072
+creep_lambda = 0.012
+rms_n_s_m = 0.55
+sd_m2 = 0.0055
+xmax_m = 0.004
+xmech_m = 0.007
+pe_max_w = 100.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00016
+l2_h = 0.00012
+r2_ohm = 11.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "be_dome_10"
+name = '1.0" Beryllium Dome Tweeter'
+category = "studio-hf"
+
+[drivers.small_signal]
+re_ohm = 5.4
+bl_t_m = 3.3
+mms_kg = 0.00036
+cms_m_per_n = 0.000135
+creep_lambda = 0.0
+rms_n_s_m = 0.32
+sd_m2 = 0.00062
+xmax_m = 0.0012
+xmech_m = 0.0022
+pe_max_w = 60.0
+
+[drivers.small_signal.inductance]
+model = "simple"
+le_h = 0.000035
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[cabinets]]
+id = "cardioid_8c"
+name = "Cardioid-8C Boundary-Controlled Studio Monitor"
+subtitle = "21 mm CLD Viscoelastic Birch + 28 mm Valchromat Baffle · Resistive Cardioid"
+dims_m = [
+    0.28,
+    0.38,
+    0.52,
+]
+edge_round_m = 0.028
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.021
+front_baffle_thickness_m = 0.028
+internal_partition_thickness_m = 0.018
+brace_thickness_m = 0.018
+brace_count = 1
+driver_rebate_depth_m = 0.006
+damping_lining_thickness_m = 0.03
+joinery = "miter45"
+
+[cabinets.construction.enclosure_material]
+name = "CLD Constrained-Layer Birch + Viscoelastic Core"
+kind = "cld_birch_viscoelastic"
+density_kg_m3 = 740.0
+youngs_modulus_gpa = 9.6
+poisson_ratio = 0.31
+loss_factor_eta = 0.085
+color_hex = "#c9935b"
+finish = "Satin Studio Catalyzed Varnish"
+
+[cabinets.construction.baffle_material]
+name = "Valchromat Structural Acoustic HDF-840"
+kind = "valchromat_hdf"
+density_kg_m3 = 840.0
+youngs_modulus_gpa = 5.2
+poisson_ratio = 0.26
+loss_factor_eta = 0.038
+color_hex = "#5c6b7d"
+finish = "CNC Matte Anthracite Hard-Wax Seal"
+
+[[cabinets.ways]]
+way_id = "lf_cardioid"
+label = '8.5" Cardioid-Slot Bass/Mid'
+driver_id = "alu_wf_85"
+driver_count = 2
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.24
+
+[cabinets.ways.enclosure]
+topology = "cardioid_slot"
+internal_volume_m3 = 0.032
+slot_area_m2 = 0.019
+slot_path_m = 0.22
+slot_flow_resistivity = 14500.0
+
+[cabinets.ways.enclosure.port]
+area_m2 = 0.0042
+length_m = 0.3
+flare_radius_m = 0.024
+
+[cabinets.ways.enclosure.port.local_exit_offset]
+x = 0.0
+y = -0.18
+z = 0.06
+
+[cabinets.ways.enclosure.port.local_normal]
+x = 0.0
+y = -1.0
+z = 0.0
+
+[[cabinets.ways]]
+way_id = "hf_wg"
+label = '1.0" Deep OS-SE Waveguide'
+driver_id = "be_dome_10"
+driver_count = 1
+dsp_channel_index = 1
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.43
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.0003
+throat_chamber_m3 = 0.00002
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.045
+throat_area_m2 = 0.00065
+mouth_area_m2 = 0.022
+aspect_ratio = 1.1
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "os_se"
+coverage_h_deg = 85.0
+coverage_v_deg = 65.0
+
+[[cabinets]]
+id = "standard_omni_mon"
+name = "Conventional Vented Monitor (Omnidirectional Bass)"
+subtitle = '19 mm Valchromat HDF · Dual 8.5" Vented Box Without Cardioid Side Slots'
+dims_m = [
+    0.28,
+    0.38,
+    0.52,
+]
+edge_round_m = 0.024
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.019
+front_baffle_thickness_m = 0.025
+internal_partition_thickness_m = 0.016
+brace_thickness_m = 0.018
+brace_count = 1
+driver_rebate_depth_m = 0.005
+damping_lining_thickness_m = 0.022
+joinery = "rabbet_dado"
+
+[cabinets.construction.enclosure_material]
+name = "Valchromat Structural Acoustic HDF-840"
+kind = "valchromat_hdf"
+density_kg_m3 = 840.0
+youngs_modulus_gpa = 5.2
+poisson_ratio = 0.26
+loss_factor_eta = 0.038
+color_hex = "#5c6b7d"
+finish = "CNC Matte Anthracite Hard-Wax Seal"
+
+[cabinets.construction.baffle_material]
+name = "Valchromat Structural Acoustic HDF-840"
+kind = "valchromat_hdf"
+density_kg_m3 = 840.0
+youngs_modulus_gpa = 5.2
+poisson_ratio = 0.26
+loss_factor_eta = 0.038
+color_hex = "#5c6b7d"
+finish = "CNC Matte Anthracite Hard-Wax Seal"
+
+[[cabinets.ways]]
+way_id = "lf_omni"
+label = 'Dual 8.5" Vented LF'
+driver_id = "alu_wf_85"
+driver_count = 2
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.24
+
+[cabinets.ways.enclosure]
+topology = "vented"
+volume_m3 = 0.036
+leakage_ql = 12.0
+
+[cabinets.ways.enclosure.port]
+area_m2 = 0.0048
+length_m = 0.29
+flare_radius_m = 0.022
+
+[cabinets.ways.enclosure.port.local_exit_offset]
+x = 0.0
+y = 0.0
+z = 0.06
+
+[cabinets.ways.enclosure.port.local_normal]
+x = 0.0
+y = 1.0
+z = 0.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 8000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.25
+
+[[cabinets.ways]]
+way_id = "hf_wg"
+label = '1.0" Deep OS-SE Waveguide'
+driver_id = "be_dome_10"
+driver_count = 1
+dsp_channel_index = 1
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.43
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.0003
+throat_chamber_m3 = 0.00002
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.045
+throat_area_m2 = 0.00065
+mouth_area_m2 = 0.022
+aspect_ratio = 1.1
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "os_se"
+coverage_h_deg = 85.0
+coverage_v_deg = 65.0
+
+[[zones]]
+id = "mix_desk"
+label = "Mixing Desk Sweet Spot"
+role = "sweet_spot"
+x_min_m = -0.5
+x_max_m = 0.5
+y_min_m = 0.65
+y_max_m = 1.35
+z_ear_m = 1.2
+
+[[zones]]
+id = "client_couch"
+label = "Producer Rear Couch (2.6 m)"
+role = "far_range"
+x_min_m = -0.9
+x_max_m = 0.9
+y_min_m = 2.2
+y_max_m = 3.0
+z_ear_m = 1.15
+
+[[variants]]
+variant_id = "cardioid_pair"
+label = "Proposed: Cardioid-8C Stereo Pair (55 cm from Wall)"
+summary = "Resistive cardioid side slots suppress the 150 Hz front-wall SBIR cancellation dip."
+
+[variants.boundary]
+space = "studio_front_wall"
+wall_y_m = -1.5
+wall_reflection = 0.86
+
+[[variants.dsp_channels]]
+id = "c_lf"
+label = "Cardioid LF/MF (<1.5 kHz)"
+gain_db = 2.5
+invert_polarity = false
+delay_s = 0.0
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1500.0
+
+[[variants.dsp_channels.stages]]
+biquad = "low_shelf"
+freq_hz = 140.0
+gain_db = 3.5
+q = 0.65
+
+[[variants.dsp_channels]]
+id = "c_hf"
+label = "OS-SE HF (>1.5 kHz)"
+gain_db = -4.2
+invert_polarity = false
+delay_s = 0.00016
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1500.0
+
+[[variants.placements]]
+instance_id = "left_c"
+label = "Left Cardioid-8C"
+cabinet_spec_id = "cardioid_8c"
+way_dsp_channels = [
+    "c_lf",
+    "c_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -30.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -1.1
+y = -0.95
+z = 0.85
+
+[[variants.placements]]
+instance_id = "right_c"
+label = "Right Cardioid-8C"
+cabinet_spec_id = "cardioid_8c"
+way_dsp_channels = [
+    "c_lf",
+    "c_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 30.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 1.1
+y = -0.95
+z = 0.85
+
+[[variants]]
+variant_id = "omni_pair"
+label = "Comparison: Conventional Vented Pair at Same Wall Offset"
+summary = "Severe front-wall SBIR comb-filtering peak at 75 Hz and notch around 150 Hz."
+
+[variants.boundary]
+space = "studio_front_wall"
+wall_y_m = -1.5
+wall_reflection = 0.86
+
+[[variants.dsp_channels]]
+id = "o_lf"
+label = "Vented LF/MF (<1.5 kHz)"
+gain_db = 0.5
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1500.0
+
+[[variants.dsp_channels]]
+id = "o_hf"
+label = "OS-SE HF (>1.5 kHz)"
+gain_db = -4.2
+invert_polarity = false
+delay_s = 0.00016
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1500.0
+
+[[variants.placements]]
+instance_id = "left_o"
+label = "Left Standard Monitor"
+cabinet_spec_id = "standard_omni_mon"
+way_dsp_channels = [
+    "o_lf",
+    "o_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -30.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -1.1
+y = -0.95
+z = 0.85
+
+[[variants.placements]]
+instance_id = "right_o"
+label = "Right Standard Monitor"
+cabinet_spec_id = "standard_omni_mon"
+way_dsp_channels = [
+    "o_lf",
+    "o_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 30.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 1.1
+y = -0.95
+z = 0.85

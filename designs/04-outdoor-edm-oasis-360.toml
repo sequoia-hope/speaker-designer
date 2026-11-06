@@ -1,0 +1,985 @@
+id = "04-outdoor-edm-oasis-360"
+title = "Oasis-360 — Open-Field Surround Dancefloor System for EDM"
+category = "Outdoor EDM Systems"
+description = "Complete open-field EDM sound system creating an enveloping 16×16 m surround sweet spot: pairing a tightly mouth-coupled North Cardioid Horn-Sub Monoblock (26–85 Hz) with 4 elevated Corner 3-Way Synergy Horn Tops (85 Hz–20 kHz)."
+design_notes = [
+    "Why Separate Sub Coupling from 4-Corner Surround Tops? Human hearing cannot localize <80 Hz sub-bass, and putting 1 sub in each corner (Variant B) destroys 4× horn mouth coupling AND carves -18 dB checkerboard comb-filtering dead valleys every 2.5 m across the dancefloor!",
+    "Coupled Sub Blanket + 360° Kick/Mid/High Immersion: Grouping all subs into one mouth-coupled North Cardioid Monoblock delivers +-2.1 dB seamless sub-bass across the entire dancefloor while the 4 elevated 60°×40° Synergy tops (-7.5° downward tilt from 2.85 m) bathe dancers in crisp 360° kick punch, synths, and stereo/quad movement without harshness.",
+    "DJ Booth & Open-Field Control: Cardioid rear subs drop 35–80 Hz boom in the North DJ booth by ~14 dB, while the -7.5° downward horn tilt aims mid/high energy onto the dancefloor turf rather than miles across the open field.",
+]
+
+[environment]
+temperature_k = 291.15
+pressure_pa = 101325.0
+relative_humidity = 0.55
+
+[settings]
+freq_min_hz = 22.0
+freq_max_hz = 18000.0
+num_freqs = 88
+small_signal_volts_rms = 2.83
+high_spl_volts_rms = 62.0
+enable_3d_bem = false
+field_bounds_m = [
+    -22.0,
+    22.0,
+    -18.0,
+    26.0,
+]
+field_grid_nx = 56
+field_grid_ny = 56
+listener_height_m = 1.65
+reference_mic_m = [
+    1.8,
+    1.2,
+    1.65,
+]
+
+[[drivers]]
+id = "horn_sub_18"
+name = '18" Neodymium High-BL Horn Subwoofer (4.5" VC)'
+category = "pa-sub"
+
+[drivers.small_signal]
+re_ohm = 5.1
+bl_t_m = 29.8
+mms_kg = 0.225
+cms_m_per_n = 0.000096
+creep_lambda = 0.022
+rms_n_s_m = 6.8
+sd_m2 = 0.122
+xmax_m = 0.0145
+xmech_m = 0.024
+pe_max_w = 1800.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00145
+l2_h = 0.00095
+r2_ohm = 15.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.025,
+    -0.25,
+    -0.02,
+    -0.05,
+]
+kms_poly = [
+    -0.035,
+    0.34,
+    0.02,
+    0.24,
+]
+le_x_poly = [
+    -0.15,
+    0.04,
+]
+le_current_factor = 0.007
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.19
+c_th_vc_j_k = 42.0
+r_th_pole_mag_k_w = 0.3
+c_th_pole_j_k = 520.0
+r_th_mag_amb_k_w = 0.65
+c_th_mag_j_k = 2800.0
+forced_cooling_coeff = 0.95
+max_vc_temp_k = 523.15
+
+[[drivers]]
+id = "kick_15"
+name = '15" Mid-Bass Punch Horn Woofer'
+category = "pa-kick"
+
+[drivers.small_signal]
+re_ohm = 5.4
+bl_t_m = 23.5
+mms_kg = 0.105
+cms_m_per_n = 0.00014
+creep_lambda = 0.015
+rms_n_s_m = 3.9
+sd_m2 = 0.085
+xmax_m = 0.0095
+xmech_m = 0.016
+pe_max_w = 900.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00095
+l2_h = 0.00065
+r2_ohm = 14.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "mid_8"
+name = '8" High-Efficiency Phase-Plug Midrange'
+category = "pa-mid"
+
+[drivers.small_signal]
+re_ohm = 5.8
+bl_t_m = 14.2
+mms_kg = 0.019
+cms_m_per_n = 0.00021
+creep_lambda = 0.01
+rms_n_s_m = 1.6
+sd_m2 = 0.022
+xmax_m = 0.0045
+xmech_m = 0.008
+pe_max_w = 350.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00035
+l2_h = 0.00025
+r2_ohm = 13.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "comp_hf_14"
+name = '1.4" Exit Titanium/PEEK Compression Driver (3" VC)'
+category = "pa-hf"
+
+[drivers.small_signal]
+re_ohm = 6.2
+bl_t_m = 11.8
+mms_kg = 0.0021
+cms_m_per_n = 0.000045
+creep_lambda = 0.0
+rms_n_s_m = 0.95
+sd_m2 = 0.0044
+xmax_m = 0.001
+xmech_m = 0.0018
+pe_max_w = 140.0
+
+[drivers.small_signal.inductance]
+model = "simple"
+le_h = 0.00008
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[cabinets]]
+id = "terra_horn_18"
+name = "TerraHorn-18 Folded Bass Horn"
+subtitle = "60×90×90 cm · 18 mm 13-Ply Birch + 24 mm Baffle · 2.25 m Salmon-Exp Path"
+dims_m = [
+    0.6,
+    0.9,
+    0.9,
+]
+edge_round_m = 0.018
+visual_fold_count = 3
+
+[cabinets.construction]
+wall_thickness_m = 0.018
+front_baffle_thickness_m = 0.024
+internal_partition_thickness_m = 0.018
+brace_thickness_m = 0.018
+brace_count = 3
+driver_rebate_depth_m = 0.008
+damping_lining_thickness_m = 0.03
+joinery = "interlocking_cnc_tab"
+
+[cabinets.construction.enclosure_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[cabinets.construction.baffle_material]
+name = "24 mm Laminated 17-Ply Marine Baltic Birch"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[[cabinets.ways]]
+way_id = "sub_horn"
+label = '18" Folded Horn'
+driver_id = "horn_sub_18"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.45
+
+[cabinets.ways.enclosure]
+topology = "folded_horn"
+rear_volume_m3 = 0.054
+throat_chamber_m3 = 0.0075
+leakage_ql = 22.0
+
+[[cabinets.ways.enclosure.segments]]
+length_m = 0.9
+throat_area_m2 = 0.042
+mouth_area_m2 = 0.145
+aspect_ratio = 1.25
+
+[cabinets.ways.enclosure.segments.contour]
+law = "salmon"
+t_factor = 0.58
+
+[[cabinets.ways.enclosure.segments]]
+length_m = 1.35
+throat_area_m2 = 0.145
+mouth_area_m2 = 0.49
+aspect_ratio = 1.1
+
+[cabinets.ways.enclosure.segments.contour]
+law = "exponential"
+
+[cabinets.ways.enclosure.rear_damping]
+flow_resistivity_pa_s_m2 = 9000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.3
+
+[[cabinets]]
+id = "synergy_3p"
+name = "Synergy-3P Tri-Amped Point-Source Horn Top"
+subtitle = '15 mm Touring Birch · 15" Kick + 8" Mid + 1.4" CNC Alu 60°×40° OS-SE'
+dims_m = [
+    0.54,
+    0.56,
+    0.88,
+]
+edge_round_m = 0.025
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.015
+front_baffle_thickness_m = 0.021
+internal_partition_thickness_m = 0.015
+brace_thickness_m = 0.015
+brace_count = 2
+driver_rebate_depth_m = 0.006
+damping_lining_thickness_m = 0.022
+joinery = "interlocking_cnc_tab"
+
+[cabinets.construction.enclosure_material]
+name = "11-Ply Lightweight Touring Baltic Birch"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[cabinets.construction.baffle_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[[cabinets.ways]]
+way_id = "kick"
+label = '15" Kick Horn'
+driver_id = "kick_15"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.27
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.042
+throat_chamber_m3 = 0.003
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.34
+throat_area_m2 = 0.045
+mouth_area_m2 = 0.19
+aspect_ratio = 1.1
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "conical"
+
+[[cabinets.ways]]
+way_id = "mid"
+label = '8" Mid Horn'
+driver_id = "mid_8"
+driver_count = 1
+dsp_channel_index = 1
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.58
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.006
+throat_chamber_m3 = 0.0005
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.22
+throat_area_m2 = 0.009
+mouth_area_m2 = 0.075
+aspect_ratio = 1.3
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "os_se"
+coverage_h_deg = 65.0
+coverage_v_deg = 45.0
+
+[[cabinets.ways]]
+way_id = "hf"
+label = '1.4" OS-SE HF'
+driver_id = "comp_hf_14"
+driver_count = 1
+dsp_channel_index = 2
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.76
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.0004
+throat_chamber_m3 = 0.00004
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.16
+throat_area_m2 = 0.00154
+mouth_area_m2 = 0.036
+aspect_ratio = 1.4
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "os_se"
+coverage_h_deg = 60.0
+coverage_v_deg = 40.0
+
+[[zones]]
+id = "dancefloor_sweet"
+label = "12×12 m Dancefloor Sweet Spot"
+role = "sweet_spot"
+x_min_m = -6.0
+x_max_m = 6.0
+y_min_m = -6.0
+y_max_m = 6.0
+z_ear_m = 1.65
+
+[[zones]]
+id = "dj_booth"
+label = "North DJ Booth (-16.5 to -13 m)"
+role = "stage_quiet"
+x_min_m = -3.5
+x_max_m = 3.5
+y_min_m = -16.5
+y_max_m = -13.0
+z_ear_m = 1.65
+
+[[zones]]
+id = "chill_lounge"
+label = "South Open-Field Lounge (12–22 m)"
+role = "far_range"
+x_min_m = -9.0
+x_max_m = 9.0
+y_min_m = 12.0
+y_max_m = 22.0
+z_ear_m = 1.5
+
+[[variants]]
+variant_id = "oasis_360_monoblock"
+label = "Proposed: Oasis-360 (Coupled Cardioid Sub Monoblock + 4-Corner Synergy Tops)"
+summary = "Zero sub comb-filtering across the 16×16 m floor, full 4× horn mouth boost, -14 dB DJ rejection, 360° surround tops."
+
+[variants.boundary]
+space = "open_field_turf"
+flow_resistivity_pa_s_m2 = 220000.0
+
+[[variants.dsp_channels]]
+id = "sub_front"
+label = "Coupled 4× Sub Front (26–85 Hz)"
+gain_db = 1.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "sub_card_rear"
+label = "Cardioid 2× Rear Cancel (-2.62 ms, Inv)"
+gain_db = 4.8
+invert_polarity = true
+delay_s = 0.00262
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "top_kick"
+label = "top Kick (85–280 Hz)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.0042
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[[variants.dsp_channels]]
+id = "top_mid"
+label = "top Mid (280–1800 Hz)"
+gain_db = -2.0
+invert_polarity = false
+delay_s = 0.004549999999999999
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels]]
+id = "top_hf"
+label = "top HF (1.8–20 kHz)"
+gain_db = -8.5
+invert_polarity = false
+delay_s = 0.00475
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels.stages]]
+biquad = "high_shelf"
+freq_hz = 9500.0
+gain_db = 3.5
+q = 0.707
+
+[[variants.placements]]
+instance_id = "sub_f1"
+label = "Sub Monoblock F1"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_front"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.93
+y = -11.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "sub_f2"
+label = "Sub Monoblock F2"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_front"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.31
+y = -11.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "sub_f3"
+label = "Sub Monoblock F3"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_front"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.31
+y = -11.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "sub_f4"
+label = "Sub Monoblock F4"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_front"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.93
+y = -11.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "sub_r1"
+label = "Sub Cardioid R1 (Top-Reversed)"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_card_rear"]
+
+[variants.placements.transform]
+yaw_deg = 180.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.31
+y = -11.0
+z = 0.91
+
+[[variants.placements]]
+instance_id = "sub_r2"
+label = "Sub Cardioid R2 (Top-Reversed)"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_card_rear"]
+
+[variants.placements.transform]
+yaw_deg = 180.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.31
+y = -11.0
+z = 0.91
+
+[[variants.placements]]
+instance_id = "top_nw"
+label = "NW Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -45.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -9.0
+y = -9.0
+z = 2.85
+
+[[variants.placements]]
+instance_id = "top_ne"
+label = "NE Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 45.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 9.0
+y = -9.0
+z = 2.85
+
+[[variants.placements]]
+instance_id = "top_se"
+label = "SE Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 135.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 9.0
+y = 9.0
+z = 2.85
+
+[[variants.placements]]
+instance_id = "top_sw"
+label = "SW Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -135.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -9.0
+y = 9.0
+z = 2.85
+
+[[variants]]
+variant_id = "naive_4corner_subs"
+label = "Anti-Pattern: Naive 4-Corner Distributed Subs + 4-Corner Tops"
+summary = "Scrub 50–80 Hz on the 3D field map to see severe checkerboard bass dead spots across the dancefloor!"
+
+[variants.boundary]
+space = "open_field_turf"
+flow_resistivity_pa_s_m2 = 220000.0
+
+[[variants.dsp_channels]]
+id = "sub_corner"
+label = "Corner Subs (26–85 Hz)"
+gain_db = 3.5
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "top_kick"
+label = "top Kick (85–280 Hz)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[[variants.dsp_channels]]
+id = "top_mid"
+label = "top Mid (280–1800 Hz)"
+gain_db = -2.0
+invert_polarity = false
+delay_s = 0.00035
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels]]
+id = "top_hf"
+label = "top HF (1.8–20 kHz)"
+gain_db = -8.5
+invert_polarity = false
+delay_s = 0.00055
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels.stages]]
+biquad = "high_shelf"
+freq_hz = 9500.0
+gain_db = 3.5
+q = 0.707
+
+[[variants.placements]]
+instance_id = "sub_nw"
+label = "NW Corner Sub"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_corner"]
+
+[variants.placements.transform]
+yaw_deg = -45.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -9.0
+y = -9.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "sub_ne"
+label = "NE Corner Sub"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_corner"]
+
+[variants.placements.transform]
+yaw_deg = 45.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 9.0
+y = -9.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "sub_se"
+label = "SE Corner Sub"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_corner"]
+
+[variants.placements.transform]
+yaw_deg = 135.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 9.0
+y = 9.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "sub_sw"
+label = "SW Corner Sub"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_corner"]
+
+[variants.placements.transform]
+yaw_deg = -135.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -9.0
+y = 9.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "top_nw"
+label = "NW Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -45.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -9.0
+y = -9.0
+z = 2.85
+
+[[variants.placements]]
+instance_id = "top_ne"
+label = "NE Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 45.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 9.0
+y = -9.0
+z = 2.85
+
+[[variants.placements]]
+instance_id = "top_se"
+label = "SE Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 135.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 9.0
+y = 9.0
+z = 2.85
+
+[[variants.placements]]
+instance_id = "top_sw"
+label = "SW Corner Synergy Top"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "top_kick",
+    "top_mid",
+    "top_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -135.0
+pitch_deg = -7.5
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -9.0
+y = 9.0
+z = 2.85

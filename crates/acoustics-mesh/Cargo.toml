@@ -1,0 +1,9 @@
+[package]
+name = "acoustics-mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+acoustics-types.workspace = true
+acoustics-math.workspace = true

@@ -1,0 +1,249 @@
+id = "08-studio-sub-linkwitz-dual12"
+title = 'IsoPulse-212 — Force-Canceling Dual-12" Sealed Linkwitz-Transform Studio Sub'
+category = "Studio Monitors"
+description = 'Ultra-compact 38-liter mastering subwoofer pairing back-to-back force-canceling 18 mm Xmax 12" drivers in CNC 6061-T6 aluminum baffles with an active Siegfried Linkwitz biquad pole-zero transform extending flat 12 dB/oct sealed transient response down to 20 Hz.'
+design_notes = [
+    'Newtonian Force Cancellation (F_front + F_rear = 0 N): Mounting two matched 12" motors on opposed +Y and -Y 32 mm billet-aluminum baffles coupled by internal 6061-T6 tie bars cancels linear chassis reaction forces to zero — eliminating floor/console vibration without needing a 120 kg enclosure.',
+    """Hoffman's Iron Law & Linkwitz Transform: Stuffing two 12" drivers into 38 L raises the raw sealed resonance to f_0 ≈ 58 Hz, Q_0 ≈ 0.96 (Variant 2). The active Linkwitz Transform pole-zero filter cancels that pole pair and substitutes a Butterworth f_p = 21 Hz, Q_p = 0.707 response (+13 dB boost at 20 Hz, Variant 1) with zero port chuffing and < 9 ms group delay!""",
+    "Inspect Excursion on the Nonlinear Tab: Because sealed cone excursion grows 4× per octave downward (1/f²), notice how the 2 kW Class-D amp + dual 18 mm Xmax cones earn their keep at 22 Hz.",
+]
+
+[environment]
+temperature_k = 293.15
+pressure_pa = 101325.0
+relative_humidity = 0.5
+
+[settings]
+freq_min_hz = 15.0
+freq_max_hz = 250.0
+num_freqs = 72
+small_signal_volts_rms = 2.83
+high_spl_volts_rms = 14.0
+enable_3d_bem = true
+field_bounds_m = [
+    -4.5,
+    4.5,
+    -2.5,
+    5.5,
+]
+field_grid_nx = 38
+field_grid_ny = 38
+listener_height_m = 1.15
+reference_mic_m = [
+    0.0,
+    2.0,
+    1.15,
+]
+
+[[drivers]]
+id = "alu_sub_12_lt"
+name = '12" Ultra-Long-Stroke Black-Anodized Alu Subwoofer (18 mm Xmax)'
+category = "studio-sub"
+
+[drivers.small_signal]
+re_ohm = 6.4
+bl_t_m = 19.2
+mms_kg = 0.178
+cms_m_per_n = 0.000195
+creep_lambda = 0.015
+rms_n_s_m = 4.2
+sd_m2 = 0.051
+xmax_m = 0.018
+xmech_m = 0.028
+pe_max_w = 900.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00115
+l2_h = 0.00072
+r2_ohm = 11.5
+
+[drivers.nonlinear]
+bl_poly = [
+    0.008,
+    -0.14,
+    -0.005,
+    -0.03,
+]
+kms_poly = [
+    -0.01,
+    0.19,
+    0.01,
+    0.12,
+]
+le_x_poly = [
+    -0.06,
+    0.02,
+]
+le_current_factor = 0.003
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[cabinets]]
+id = "isopulse_212"
+name = 'IsoPulse-212 Force-Canceling Dual-12" Studio Sub'
+subtitle = "42×44×43 cm (38 L Net) · 25 mm Valchromat HDF + Dual 32 mm CNC 6061-T6 Alu Baffles"
+dims_m = [
+    0.42,
+    0.44,
+    0.43,
+]
+edge_round_m = 0.022
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.025
+front_baffle_thickness_m = 0.032
+internal_partition_thickness_m = 0.022
+brace_thickness_m = 0.022
+brace_count = 1
+driver_rebate_depth_m = 0.009
+damping_lining_thickness_m = 0.03
+joinery = "miter45"
+
+[cabinets.construction.enclosure_material]
+name = "Valchromat Structural Acoustic HDF-840"
+kind = "valchromat_hdf"
+density_kg_m3 = 840.0
+youngs_modulus_gpa = 5.2
+poisson_ratio = 0.26
+loss_factor_eta = 0.038
+color_hex = "#5c6b7d"
+finish = "CNC Matte Anthracite Hard-Wax Seal"
+
+[cabinets.construction.baffle_material]
+name = "CNC 6061-T6 Billet Aluminum"
+kind = "cast_aluminum6061"
+density_kg_m3 = 2700.0
+youngs_modulus_gpa = 68.9
+poisson_ratio = 0.33
+loss_factor_eta = 0.015
+color_hex = "#9fb3c8"
+finish = "Bead-Blasted Hard Black Anodized"
+
+[[cabinets.ways]]
+way_id = "dual12"
+label = 'Dual-Opposed 12" Sealed'
+driver_id = "alu_sub_12_lt"
+driver_count = 2
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.215
+
+[cabinets.ways.enclosure]
+topology = "sealed"
+volume_m3 = 0.038
+leakage_ql = 24.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 11000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.55
+
+[[zones]]
+id = "mix_chair"
+label = "Mastering Desk Sweet Spot (1.6–2.6 m)"
+role = "sweet_spot"
+x_min_m = -0.9
+x_max_m = 0.9
+y_min_m = 1.6
+y_max_m = 2.6
+z_ear_m = 1.15
+
+[[variants]]
+variant_id = "active_linkwitz_21hz"
+label = "Active Linkwitz Transform (Flat to 21 Hz, Qp = 0.71)"
+summary = "Ruler-flat 21–85 Hz sub-bass with sealed 2nd-order transient accuracy and zero port Mach noise."
+
+[variants.boundary]
+space = "rigid_ground2_pi"
+
+[[variants.dsp_channels]]
+id = "lt_22hz"
+label = "Active Linkwitz Transform (f0=58Hz → fp=21Hz, Qp=0.71)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 17.5
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.dsp_channels.stages]]
+biquad = "linkwitz_transform"
+f0_hz = 58.0
+q0 = 0.96
+fp_hz = 21.0
+qp = 0.707
+
+[[variants.placements]]
+instance_id = "iso_1"
+label = "IsoPulse-212"
+cabinet_spec_id = "isopulse_212"
+way_dsp_channels = ["lt_22hz"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0
+
+[[variants]]
+variant_id = "raw_uncompensated_38l"
+label = "Raw 38 L Sealed Box (f0 = 58 Hz, Q0 = 0.96 — No LT)"
+summary = "Shows the raw high-Q small-box response before active pole-zero Linkwitz compensation."
+
+[variants.boundary]
+space = "rigid_ground2_pi"
+
+[[variants.dsp_channels]]
+id = "raw_sealed"
+label = "Uncompensated 38 L Sealed Box (No Linkwitz Transform)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.placements]]
+instance_id = "iso_raw"
+label = "IsoPulse-212 (Raw)"
+cabinet_spec_id = "isopulse_212"
+way_dsp_channels = ["raw_sealed"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0

@@ -1,0 +1,19 @@
+[package]
+name = "speaker-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "speaker-cli"
+path = "src/main.rs"
+
+[dependencies]
+acoustics-types.workspace = true
+acoustics-io.workspace = true
+acoustics-calibration.workspace = true
+speaker-engine.workspace = true
+clap.workspace = true
+rayon.workspace = true
+serde_json.workspace = true
+toml.workspace = true

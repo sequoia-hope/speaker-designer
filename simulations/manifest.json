@@ -1,0 +1,95 @@
+{
+  "generated_at": "2026-11-05",
+  "simulations": [
+    {
+      "id": "01-studio-monitor-aether-83m",
+      "title": "Aether-83M — 3-Way Constant-Directivity Studio Monitor",
+      "category": "Studio Monitors",
+      "subtitle": "Smooth CTA-2034 Spinorama, controlled 90°×70° dispersion, low port Mach velocity.",
+      "bundle_path": "simulations/01-studio-monitor-aether-83m/bundle.json",
+      "variant_count": 2,
+      "has_calibration": false
+    },
+    {
+      "id": "02-studio-monitor-cardioid-sbir",
+      "title": "Cardioid-8C — Stereo Studio Monitor Pair Near Front Wall (SBIR Elimination)",
+      "category": "Studio Monitors",
+      "subtitle": "Resistive cardioid side slots suppress the 150 Hz front-wall SBIR cancellation dip.",
+      "bundle_path": "simulations/02-studio-monitor-cardioid-sbir/bundle.json",
+      "variant_count": 2,
+      "has_calibration": false
+    },
+    {
+      "id": "03-subwoofer-coupling-1x-2x-4x",
+      "title": "TerraHorn-18 — Why 2× & 4× Coupled Subwoofer Horns Sound Magical",
+      "category": "Coupled Subwoofer Physics",
+      "subtitle": "1.96 m² combined horn mouth: smooths throat impedance, drops cutoff to ~28 Hz, +13.5 dB over 1×.",
+      "bundle_path": "simulations/03-subwoofer-coupling-1x-2x-4x/bundle.json",
+      "variant_count": 4,
+      "has_calibration": false
+    },
+    {
+      "id": "04-outdoor-edm-oasis-360",
+      "title": "Oasis-360 — Open-Field Surround Dancefloor System for EDM",
+      "category": "Outdoor EDM Systems",
+      "subtitle": "Zero sub comb-filtering across the 16×16 m floor, full 4× horn mouth boost, -14 dB DJ rejection, 360° surround tops.",
+      "bundle_path": "simulations/04-outdoor-edm-oasis-360/bundle.json",
+      "variant_count": 2,
+      "has_calibration": false
+    },
+    {
+      "id": "05-outdoor-edm-fieldthrow-range",
+      "title": "FieldThrow-Arc — Open-Field Dancefloor + 45 m Long-Range Throw",
+      "category": "Outdoor EDM Systems",
+      "subtitle": "Even 75° horizontal bass fan with zero side lobing and balanced near-to-45m SPL.",
+      "bundle_path": "simulations/05-outdoor-edm-fieldthrow-range/bundle.json",
+      "variant_count": 2,
+      "has_calibration": false
+    },
+    {
+      "id": "06-prototype-bayesian-calibration",
+      "title": "Prototype #1 Calibration — Updating Simulation Models from Measurements",
+      "category": "Measurement Calibration",
+      "subtitle": "Matches physical prototype within 0.09 dB RMS across impedance & SPL; predicts true high-SPL excursion.",
+      "bundle_path": "simulations/06-prototype-bayesian-calibration/bundle.json",
+      "variant_count": 2,
+      "has_calibration": true
+    },
+    {
+      "id": "07-tapped-horn-keystone-18",
+      "title": "Keystone-18TH Tapped Bass Horn — λ/2 Dual-Side Loading vs Front-Loaded Horn",
+      "category": "Coupled Subwoofer Physics",
+      "subtitle": "1.54 m² combined tapped-horn mouth pushes sub-bass extension smoothly down to 28 Hz with seismic authority.",
+      "bundle_path": "simulations/07-tapped-horn-keystone-18/bundle.json",
+      "variant_count": 4,
+      "has_calibration": false
+    },
+    {
+      "id": "08-studio-sub-linkwitz-dual12",
+      "title": "IsoPulse-212 — Force-Canceling Dual-12\" Sealed Linkwitz-Transform Studio Sub",
+      "category": "Studio Monitors",
+      "subtitle": "Ruler-flat 21–85 Hz sub-bass with sealed 2nd-order transient accuracy and zero port Mach noise.",
+      "bundle_path": "simulations/08-studio-sub-linkwitz-dual12/bundle.json",
+      "variant_count": 2,
+      "has_calibration": false
+    },
+    {
+      "id": "09-mastering-tower-chronos-mtm",
+      "title": "Chronos-MTM — Symmetric D'Appolito Mastering Tower (CLD Birch + Billet Alu)",
+      "category": "Studio Monitors",
+      "subtitle": "Coherent symmetric vertical main lobe with suppressed floor/ceiling bounce and smooth CTA-2034 ERDI.",
+      "bundle_path": "simulations/09-mastering-tower-chronos-mtm/bundle.json",
+      "variant_count": 2,
+      "has_calibration": false
+    },
+    {
+      "id": "10-festival-endfire-vs-csa",
+      "title": "Outdoor Bass Array Shootout — 4-Deep End-Fire Line vs 3:1 CSA vs Broadside Wall",
+      "category": "Outdoor EDM Systems",
+      "subtitle": "All 4 subs sum in-phase forward with wide horizontal coverage and deep broadband rear cancellation.",
+      "bundle_path": "simulations/10-festival-endfire-vs-csa/bundle.json",
+      "variant_count": 3,
+      "has_calibration": false
+    }
+  ]
+}

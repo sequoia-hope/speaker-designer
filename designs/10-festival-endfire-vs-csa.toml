@@ -1,0 +1,534 @@
+id = "10-festival-endfire-vs-csa"
+title = "Outdoor Bass Array Shootout — 4-Deep End-Fire Line vs 3:1 CSA vs Broadside Wall"
+category = "Outdoor EDM Systems"
+description = 'Compares the three canonical 4-cabinet outdoor subwoofer deployments using identical 18" touring reflex subs on open turf: a 3.45 m 4-rank End-Fire progressive delay line, a compact 3-front/1-rear Cardioid Sub Array (CSA), and a 4-wide unsteered broadside wall.'
+design_notes = [
+    "End-Fire Progressive Delay Physics (Variant 1): Spacing 4 subs 1.15 m front-to-back and delaying each forward rank by d/c_0 = 3.35 ms aligns all 4 wavefronts constructively toward the dancefloor (+Y) across the entire 30–90 Hz band while smearing rear radiation across 4 destructively phased arrivals — achieving 15–20 dB broadband stage rejection and uniform wide horizontal coverage!",
+    "3:1 Cardioid Sub Array (CSA, Variant 2): Uses zero stage depth (0.8 m footprint) by aiming 1 inverted/delayed sub backward to cancel the 3 forward subs behind the stack. Beats the Broadside Wall by > 13 dB in DJ-booth quietness, though sacrificing ~2.2 dB forward headroom relative to End-Fire because 1 of the 4 boxes works purely as an active absorber/canceler.",
+    "Broadside Wall Beaming (Variant 3): Delivers maximum coupled mutual Z_rad loading on-axis, but floods the stage behind with omnidirectional sub-bass and narrows horizontally above 65 Hz.",
+]
+
+[environment]
+temperature_k = 293.15
+pressure_pa = 101325.0
+relative_humidity = 0.5
+
+[settings]
+freq_min_hz = 22.0
+freq_max_hz = 160.0
+num_freqs = 68
+small_signal_volts_rms = 2.83
+high_spl_volts_rms = 72.0
+enable_3d_bem = false
+field_bounds_m = [
+    -18.0,
+    18.0,
+    -14.0,
+    28.0,
+]
+field_grid_nx = 50
+field_grid_ny = 54
+listener_height_m = 1.65
+reference_mic_m = [
+    0.0,
+    14.0,
+    1.65,
+]
+
+[[drivers]]
+id = "tour_sub_18"
+name = '18" Touring Neodymium Reflex Subwoofer (15 mm Xmax)'
+category = "pa-sub"
+
+[drivers.small_signal]
+re_ohm = 5.2
+bl_t_m = 26.8
+mms_kg = 0.212
+cms_m_per_n = 0.000132
+creep_lambda = 0.018
+rms_n_s_m = 5.5
+sd_m2 = 0.122
+xmax_m = 0.015
+xmech_m = 0.024
+pe_max_w = 1800.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00138
+l2_h = 0.00088
+r2_ohm = 14.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[cabinets]]
+id = "terravent_tour_18"
+name = "TerraVent-18 Touring Bass-Reflex Sub"
+subtitle = "58×72×68 cm · 18 mm 13-Ply Birch + 24 mm Baffle · 155 L Tuned to 33 Hz"
+dims_m = [
+    0.58,
+    0.72,
+    0.68,
+]
+edge_round_m = 0.02
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.018
+front_baffle_thickness_m = 0.024
+internal_partition_thickness_m = 0.018
+brace_thickness_m = 0.018
+brace_count = 2
+driver_rebate_depth_m = 0.007
+damping_lining_thickness_m = 0.022
+joinery = "interlocking_cnc_tab"
+
+[cabinets.construction.enclosure_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[cabinets.construction.baffle_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[[cabinets.ways]]
+way_id = "sub18"
+label = '18" Touring Reflex'
+driver_id = "tour_sub_18"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.38
+
+[cabinets.ways.enclosure]
+topology = "vented"
+volume_m3 = 0.155
+leakage_ql = 14.0
+
+[cabinets.ways.enclosure.port]
+area_m2 = 0.032
+length_m = 0.36
+flare_radius_m = 0.024
+
+[cabinets.ways.enclosure.port.local_exit_offset]
+x = 0.0
+y = 0.0
+z = 0.08
+
+[cabinets.ways.enclosure.port.local_normal]
+x = 0.0
+y = 1.0
+z = 0.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 8000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.12
+
+[[zones]]
+id = "ef_floor"
+label = "Open-Field Dancefloor (7–22 m)"
+role = "sweet_spot"
+x_min_m = -8.0
+x_max_m = 8.0
+y_min_m = 7.0
+y_max_m = 22.0
+z_ear_m = 1.65
+
+[[zones]]
+id = "ef_stage"
+label = "DJ Booth / Stage Deck (-9 to -2.5 m)"
+role = "stage_quiet"
+x_min_m = -5.0
+x_max_m = 5.0
+y_min_m = -9.0
+y_max_m = -2.5
+z_ear_m = 1.65
+
+[[variants]]
+variant_id = "endfire_4deep"
+label = "4-Deep End-Fire Line (1.15 m Spacing · 3.35 ms/rank)"
+summary = "All 4 subs sum in-phase forward with wide horizontal coverage and deep broadband rear cancellation."
+
+[variants.boundary]
+space = "open_field_turf"
+flow_resistivity_pa_s_m2 = 200000.0
+
+[[variants.dsp_channels]]
+id = "ef_rank_0"
+label = "End-Fire Rank 1 (+0.00 ms)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.dsp_channels]]
+id = "ef_rank_1"
+label = "End-Fire Rank 2 (+3.35 ms)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0033508158508158505
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.dsp_channels]]
+id = "ef_rank_2"
+label = "End-Fire Rank 3 (+6.70 ms)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.006701631701631701
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.dsp_channels]]
+id = "ef_rank_3"
+label = "End-Fire Rank 4 (+10.05 ms)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.010052447552447552
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.placements]]
+instance_id = "ef_0"
+label = "End-Fire Rank #1"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["ef_rank_0"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "ef_1"
+label = "End-Fire Rank #2"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["ef_rank_1"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 1.15
+z = 0.0
+
+[[variants.placements]]
+instance_id = "ef_2"
+label = "End-Fire Rank #3"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["ef_rank_2"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 2.3
+z = 0.0
+
+[[variants.placements]]
+instance_id = "ef_3"
+label = "End-Fire Rank #4"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["ef_rank_3"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 3.4499999999999997
+z = 0.0
+
+[[variants]]
+variant_id = "csa_3_to_1"
+label = "3-Front / 1-Rear Cardioid Sub Array (Compact CSA)"
+summary = "Compact footprint with a deep heart-shaped rear stage null right over the DJ deck."
+
+[variants.boundary]
+space = "open_field_turf"
+flow_resistivity_pa_s_m2 = 200000.0
+
+[[variants.dsp_channels]]
+id = "csa_front"
+label = "CSA Front 3× Subs (0 ms, +0 dB)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.dsp_channels]]
+id = "csa_rear"
+label = "CSA Rear Inverted Sub (2.35 ms, -1.5 dB, 180°)"
+gain_db = -1.5
+invert_polarity = true
+delay_s = 0.00235
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.placements]]
+instance_id = "csa_fl"
+label = "CSA Front-Left"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["csa_front"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.62
+y = 0.8
+z = 0.0
+
+[[variants.placements]]
+instance_id = "csa_fc"
+label = "CSA Front-Center"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["csa_front"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.8
+z = 0.0
+
+[[variants.placements]]
+instance_id = "csa_fr"
+label = "CSA Front-Right"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["csa_front"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.62
+y = 0.8
+z = 0.0
+
+[[variants.placements]]
+instance_id = "csa_rear_inv"
+label = "CSA Rear-Facing Cancellation Sub"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["csa_rear"]
+
+[variants.placements.transform]
+yaw_deg = 180.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0
+
+[[variants]]
+variant_id = "broadside_4wide"
+label = "4-Wide Unsteered Broadside Wall (High Rear Spill)"
+summary = "Maximum mutual Z_rad loading on-axis, but loud stage spill (-Y) and horizontal narrowing."
+
+[variants.boundary]
+space = "open_field_turf"
+flow_resistivity_pa_s_m2 = 200000.0
+
+[[variants.dsp_channels]]
+id = "wall_flat"
+label = "Broadside 4-Wide Unsteered Bus"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 28.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 95.0
+
+[[variants.placements]]
+instance_id = "wall_0"
+label = "Broadside Wall #1"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["wall_flat"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -1.35
+y = 0.5
+z = 0.0
+
+[[variants.placements]]
+instance_id = "wall_1"
+label = "Broadside Wall #2"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["wall_flat"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.45
+y = 0.5
+z = 0.0
+
+[[variants.placements]]
+instance_id = "wall_2"
+label = "Broadside Wall #3"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["wall_flat"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.45
+y = 0.5
+z = 0.0
+
+[[variants.placements]]
+instance_id = "wall_3"
+label = "Broadside Wall #4"
+cabinet_spec_id = "terravent_tour_18"
+way_dsp_channels = ["wall_flat"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 1.35
+y = 0.5
+z = 0.0

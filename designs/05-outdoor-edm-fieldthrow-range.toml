@@ -1,0 +1,1152 @@
+id = "05-outdoor-edm-fieldthrow-range"
+title = "FieldThrow-Arc — Open-Field Dancefloor + 45 m Long-Range Throw"
+category = "Outdoor EDM Systems"
+description = "Designed for open-field gatherings needing both high-impact front dancefloor coverage (6–20 m) and coherent long-range projection out to 45 m — comparing a 6-Sub Coupled Electronic Arc against classic spaced L/R sub stacks."
+design_notes = [
+    "Eliminating the 'Power Alley': Separating Left & Right sub stacks by 10.4 m (Variant B) creates a narrow +6 dB center bass beam flanked by deep -15 dB cancellation fingers across the field. Centering all 6 subs at 0.62 m spacing (< lambda/4) with parabolic 75° Electronic-Arc delays (Variant A) creates one seamless, lobe-free 75° bass fan out to 45 m!",
+    "Dual-Splay Vertical Shading for Range: Stacking an upper Long-Throw Synergy top (+3 dB, -2.2° tilt aimed at 35 m) over a padded Near-Fill top (-2.5 dB, -9° tilt aimed at 10 m) counteracts inverse-square distance loss so front-row dancers aren't deafened while 40 m listeners still get crisp HF/mid clarity (compensating ISO 9613-1 air + turf absorption).",
+]
+
+[environment]
+temperature_k = 293.15
+pressure_pa = 101325.0
+relative_humidity = 0.48
+
+[settings]
+freq_min_hz = 22.0
+freq_max_hz = 18000.0
+num_freqs = 86
+small_signal_volts_rms = 2.83
+high_spl_volts_rms = 75.0
+enable_3d_bem = false
+field_bounds_m = [
+    -22.0,
+    22.0,
+    -10.0,
+    48.0,
+]
+field_grid_nx = 54
+field_grid_ny = 58
+listener_height_m = 1.65
+reference_mic_m = [
+    0.0,
+    14.0,
+    1.65,
+]
+
+[[drivers]]
+id = "horn_sub_18"
+name = '18" Neodymium High-BL Horn Subwoofer (4.5" VC)'
+category = "pa-sub"
+
+[drivers.small_signal]
+re_ohm = 5.1
+bl_t_m = 29.8
+mms_kg = 0.225
+cms_m_per_n = 0.000096
+creep_lambda = 0.022
+rms_n_s_m = 6.8
+sd_m2 = 0.122
+xmax_m = 0.0145
+xmech_m = 0.024
+pe_max_w = 1800.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00145
+l2_h = 0.00095
+r2_ohm = 15.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.025,
+    -0.25,
+    -0.02,
+    -0.05,
+]
+kms_poly = [
+    -0.035,
+    0.34,
+    0.02,
+    0.24,
+]
+le_x_poly = [
+    -0.15,
+    0.04,
+]
+le_current_factor = 0.007
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.19
+c_th_vc_j_k = 42.0
+r_th_pole_mag_k_w = 0.3
+c_th_pole_j_k = 520.0
+r_th_mag_amb_k_w = 0.65
+c_th_mag_j_k = 2800.0
+forced_cooling_coeff = 0.95
+max_vc_temp_k = 523.15
+
+[[drivers]]
+id = "kick_15"
+name = '15" Mid-Bass Punch Horn Woofer'
+category = "pa-kick"
+
+[drivers.small_signal]
+re_ohm = 5.4
+bl_t_m = 23.5
+mms_kg = 0.105
+cms_m_per_n = 0.00014
+creep_lambda = 0.015
+rms_n_s_m = 3.9
+sd_m2 = 0.085
+xmax_m = 0.0095
+xmech_m = 0.016
+pe_max_w = 900.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00095
+l2_h = 0.00065
+r2_ohm = 14.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "mid_8"
+name = '8" High-Efficiency Phase-Plug Midrange'
+category = "pa-mid"
+
+[drivers.small_signal]
+re_ohm = 5.8
+bl_t_m = 14.2
+mms_kg = 0.019
+cms_m_per_n = 0.00021
+creep_lambda = 0.01
+rms_n_s_m = 1.6
+sd_m2 = 0.022
+xmax_m = 0.0045
+xmech_m = 0.008
+pe_max_w = 350.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00035
+l2_h = 0.00025
+r2_ohm = 13.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "comp_hf_14"
+name = '1.4" Exit Titanium/PEEK Compression Driver (3" VC)'
+category = "pa-hf"
+
+[drivers.small_signal]
+re_ohm = 6.2
+bl_t_m = 11.8
+mms_kg = 0.0021
+cms_m_per_n = 0.000045
+creep_lambda = 0.0
+rms_n_s_m = 0.95
+sd_m2 = 0.0044
+xmax_m = 0.001
+xmech_m = 0.0018
+pe_max_w = 140.0
+
+[drivers.small_signal.inductance]
+model = "simple"
+le_h = 0.00008
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[cabinets]]
+id = "terra_horn_18"
+name = "TerraHorn-18 Folded Bass Horn"
+subtitle = "60×90×90 cm · 18 mm 13-Ply Birch + 24 mm Baffle · 2.25 m Salmon-Exp Path"
+dims_m = [
+    0.6,
+    0.9,
+    0.9,
+]
+edge_round_m = 0.018
+visual_fold_count = 3
+
+[cabinets.construction]
+wall_thickness_m = 0.018
+front_baffle_thickness_m = 0.024
+internal_partition_thickness_m = 0.018
+brace_thickness_m = 0.018
+brace_count = 3
+driver_rebate_depth_m = 0.008
+damping_lining_thickness_m = 0.03
+joinery = "interlocking_cnc_tab"
+
+[cabinets.construction.enclosure_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[cabinets.construction.baffle_material]
+name = "24 mm Laminated 17-Ply Marine Baltic Birch"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[[cabinets.ways]]
+way_id = "sub_horn"
+label = '18" Folded Horn'
+driver_id = "horn_sub_18"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.45
+
+[cabinets.ways.enclosure]
+topology = "folded_horn"
+rear_volume_m3 = 0.054
+throat_chamber_m3 = 0.0075
+leakage_ql = 22.0
+
+[[cabinets.ways.enclosure.segments]]
+length_m = 0.9
+throat_area_m2 = 0.042
+mouth_area_m2 = 0.145
+aspect_ratio = 1.25
+
+[cabinets.ways.enclosure.segments.contour]
+law = "salmon"
+t_factor = 0.58
+
+[[cabinets.ways.enclosure.segments]]
+length_m = 1.35
+throat_area_m2 = 0.145
+mouth_area_m2 = 0.49
+aspect_ratio = 1.1
+
+[cabinets.ways.enclosure.segments.contour]
+law = "exponential"
+
+[cabinets.ways.enclosure.rear_damping]
+flow_resistivity_pa_s_m2 = 9000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.3
+
+[[cabinets]]
+id = "synergy_3p"
+name = "Synergy-3P Tri-Amped Point-Source Horn Top"
+subtitle = '15 mm Touring Birch · 15" Kick + 8" Mid + 1.4" CNC Alu 60°×40° OS-SE'
+dims_m = [
+    0.54,
+    0.56,
+    0.88,
+]
+edge_round_m = 0.025
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.015
+front_baffle_thickness_m = 0.021
+internal_partition_thickness_m = 0.015
+brace_thickness_m = 0.015
+brace_count = 2
+driver_rebate_depth_m = 0.006
+damping_lining_thickness_m = 0.022
+joinery = "interlocking_cnc_tab"
+
+[cabinets.construction.enclosure_material]
+name = "11-Ply Lightweight Touring Baltic Birch"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[cabinets.construction.baffle_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[[cabinets.ways]]
+way_id = "kick"
+label = '15" Kick Horn'
+driver_id = "kick_15"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.27
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.042
+throat_chamber_m3 = 0.003
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.34
+throat_area_m2 = 0.045
+mouth_area_m2 = 0.19
+aspect_ratio = 1.1
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "conical"
+
+[[cabinets.ways]]
+way_id = "mid"
+label = '8" Mid Horn'
+driver_id = "mid_8"
+driver_count = 1
+dsp_channel_index = 1
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.58
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.006
+throat_chamber_m3 = 0.0005
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.22
+throat_area_m2 = 0.009
+mouth_area_m2 = 0.075
+aspect_ratio = 1.3
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "os_se"
+coverage_h_deg = 65.0
+coverage_v_deg = 45.0
+
+[[cabinets.ways]]
+way_id = "hf"
+label = '1.4" OS-SE HF'
+driver_id = "comp_hf_14"
+driver_count = 1
+dsp_channel_index = 2
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.76
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.0004
+throat_chamber_m3 = 0.00004
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.16
+throat_area_m2 = 0.00154
+mouth_area_m2 = 0.036
+aspect_ratio = 1.4
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "os_se"
+coverage_h_deg = 60.0
+coverage_v_deg = 40.0
+
+[[zones]]
+id = "main_floor"
+label = "Primary Dancefloor (6–20 m)"
+role = "sweet_spot"
+x_min_m = -8.0
+x_max_m = 8.0
+y_min_m = 6.0
+y_max_m = 20.0
+z_ear_m = 1.65
+
+[[zones]]
+id = "far_meadow"
+label = "Long-Range Open Field (24–44 m)"
+role = "far_range"
+x_min_m = -12.0
+x_max_m = 12.0
+y_min_m = 24.0
+y_max_m = 44.0
+z_ear_m = 1.65
+
+[[zones]]
+id = "stage_deck"
+label = "Stage / DJ Deck (-8 to -2.5 m)"
+role = "stage_quiet"
+x_min_m = -5.0
+x_max_m = 5.0
+y_min_m = -8.0
+y_max_m = -2.5
+z_ear_m = 1.65
+
+[[variants]]
+variant_id = "coupled_arc_dual_splay"
+label = "Proposed: 6× Coupled 75° Electronic-Arc Subs + Dual-Splay Mains"
+summary = "Even 75° horizontal bass fan with zero side lobing and balanced near-to-45m SPL."
+
+[variants.boundary]
+space = "open_field_turf"
+flow_resistivity_pa_s_m2 = 200000.0
+
+[[variants.dsp_channels]]
+id = "sub_arc_0"
+label = "Sub Arc #1 (1.53 ms)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.0015339769715400364
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "sub_arc_1"
+label = "Sub Arc #2 (0.51 ms)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.0005128919701972088
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "sub_arc_2"
+label = "Sub Arc #3 (0.06 ms)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.00005522467602221033
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "sub_arc_3"
+label = "Sub Arc #4 (0.06 ms)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.00005522467602221033
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "sub_arc_4"
+label = "Sub Arc #5 (0.51 ms)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.0005128919701972088
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "sub_arc_5"
+label = "Sub Arc #6 (1.53 ms)"
+gain_db = 1.5
+invert_polarity = false
+delay_s = 0.0015339769715400364
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "arc_rear_csa"
+label = "Arc Cardioid Rear (-2.7 ms, Inv)"
+gain_db = -1.5
+invert_polarity = true
+delay_s = 0.0027
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "throw_kick"
+label = "throw Kick (85–280 Hz)"
+gain_db = 4.5
+invert_polarity = false
+delay_s = 0.0012
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[[variants.dsp_channels]]
+id = "throw_mid"
+label = "throw Mid (280–1800 Hz)"
+gain_db = 1.0
+invert_polarity = false
+delay_s = 0.00155
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels]]
+id = "throw_hf"
+label = "throw HF (1.8–20 kHz)"
+gain_db = -5.5
+invert_polarity = false
+delay_s = 0.0017499999999999998
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels.stages]]
+biquad = "high_shelf"
+freq_hz = 9500.0
+gain_db = 3.5
+q = 0.707
+
+[[variants.dsp_channels]]
+id = "near_kick"
+label = "near Kick (85–280 Hz)"
+gain_db = -1.0
+invert_polarity = false
+delay_s = 0.0014
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[[variants.dsp_channels]]
+id = "near_mid"
+label = "near Mid (280–1800 Hz)"
+gain_db = -4.5
+invert_polarity = false
+delay_s = 0.00175
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels]]
+id = "near_hf"
+label = "near HF (1.8–20 kHz)"
+gain_db = -11.0
+invert_polarity = false
+delay_s = 0.00195
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels.stages]]
+biquad = "high_shelf"
+freq_hz = 9500.0
+gain_db = 3.5
+q = 0.707
+
+[[variants.placements]]
+instance_id = "arc_s0"
+label = "Arc Sub 1"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_arc_0"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -1.55
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "arc_s1"
+label = "Arc Sub 2"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_arc_1"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.93
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "arc_s2"
+label = "Arc Sub 3"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_arc_2"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.31
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "arc_s3"
+label = "Arc Sub 4"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_arc_3"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.31
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "arc_s4"
+label = "Arc Sub 5"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_arc_4"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.93
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "arc_s5"
+label = "Arc Sub 6"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["sub_arc_5"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 1.55
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "arc_rear_0"
+label = "Cardioid Rear 1"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["arc_rear_csa"]
+
+[variants.placements.transform]
+yaw_deg = 180.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -0.62
+y = -0.95
+z = 0.0
+
+[[variants.placements]]
+instance_id = "arc_rear_1"
+label = "Cardioid Rear 2"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["arc_rear_csa"]
+
+[variants.placements.transform]
+yaw_deg = 180.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.62
+y = -0.95
+z = 0.0
+
+[[variants.placements]]
+instance_id = "main_l_hi"
+label = "Left Long-Throw Main"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "throw_kick",
+    "throw_mid",
+    "throw_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -8.0
+pitch_deg = -2.2
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -5.2
+y = 0.0
+z = 3.55
+
+[[variants.placements]]
+instance_id = "main_r_hi"
+label = "Right Long-Throw Main"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "throw_kick",
+    "throw_mid",
+    "throw_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 8.0
+pitch_deg = -2.2
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 5.2
+y = 0.0
+z = 3.55
+
+[[variants.placements]]
+instance_id = "main_l_lo"
+label = "Left Dancefloor Fill"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "near_kick",
+    "near_mid",
+    "near_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -18.0
+pitch_deg = -9.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -5.2
+y = 0.0
+z = 2.55
+
+[[variants.placements]]
+instance_id = "main_r_lo"
+label = "Right Dancefloor Fill"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "near_kick",
+    "near_mid",
+    "near_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 18.0
+pitch_deg = -9.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 5.2
+y = 0.0
+z = 2.55
+
+[[variants]]
+variant_id = "spaced_lr_stacks"
+label = "Comparison: Spaced Left/Right Sub Stacks (Power-Alley Lobing)"
+summary = "Scrub 50–80 Hz on the field map to see the narrow center power alley and deep off-axis nulls."
+
+[variants.boundary]
+space = "open_field_turf"
+flow_resistivity_pa_s_m2 = 200000.0
+
+[[variants.dsp_channels]]
+id = "lr_sub"
+label = "Spaced L/R Subs"
+gain_db = 2.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[[variants.dsp_channels]]
+id = "throw_kick"
+label = "throw Kick (85–280 Hz)"
+gain_db = 3.5
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 85.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[[variants.dsp_channels]]
+id = "throw_mid"
+label = "throw Mid (280–1800 Hz)"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.00035
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 280.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels]]
+id = "throw_hf"
+label = "throw HF (1.8–20 kHz)"
+gain_db = -6.5
+invert_polarity = false
+delay_s = 0.00055
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1800.0
+
+[[variants.dsp_channels.stages]]
+biquad = "high_shelf"
+freq_hz = 9500.0
+gain_db = 3.5
+q = 0.707
+
+[[variants.placements]]
+instance_id = "lr_s0"
+label = "L/R Sub 1"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["lr_sub"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -5.8
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "lr_s1"
+label = "L/R Sub 2"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["lr_sub"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -5.2
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "lr_s2"
+label = "L/R Sub 3"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["lr_sub"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -4.6
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "lr_s3"
+label = "L/R Sub 4"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["lr_sub"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 4.6
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "lr_s4"
+label = "L/R Sub 5"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["lr_sub"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 5.2
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "lr_s5"
+label = "L/R Sub 6"
+cabinet_spec_id = "terra_horn_18"
+way_dsp_channels = ["lr_sub"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 5.8
+y = 0.0
+z = 0.0
+
+[[variants.placements]]
+instance_id = "lr_top_l"
+label = "Left Main"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "throw_kick",
+    "throw_mid",
+    "throw_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = -10.0
+pitch_deg = -4.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = -5.2
+y = 0.0
+z = 3.0
+
+[[variants.placements]]
+instance_id = "lr_top_r"
+label = "Right Main"
+cabinet_spec_id = "synergy_3p"
+way_dsp_channels = [
+    "throw_kick",
+    "throw_mid",
+    "throw_hf",
+]
+
+[variants.placements.transform]
+yaw_deg = 10.0
+pitch_deg = -4.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 5.2
+y = 0.0
+z = 3.0

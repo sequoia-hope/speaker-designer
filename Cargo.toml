@@ -1,0 +1,55 @@
+[workspace]
+members = [
+    # Layer 0 — Pure Types & Numerical Primitives (WASM-clean)
+    "crates/acoustics-types",
+    "crates/acoustics-math",
+
+    # Layer 1 — Analytical Oracles & 3D Parametric/Manifold Meshing (WASM-clean)
+    "crates/acoustics-oracles",
+    "crates/acoustics-mesh",
+
+    # Layer 2 — Multi-Fidelity Physics Solvers & Active DSP (WASM-clean)
+    "crates/acoustics-dsp",
+    "crates/acoustics-network",
+    "crates/acoustics-bem",
+    "crates/acoustics-nonlinear",
+
+    # Layer 3 — Measurement I/O, Bayesian Calibration & Session Engine (WASM-clean)
+    "crates/acoustics-io",
+    "crates/acoustics-calibration",
+    "crates/speaker-engine",
+    "crates/speaker-wasm",
+
+    # Layer 4 — Native CLI Simulation & Calibration Host (non-WASM)
+    "crates/speaker-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Sequoia Alexander"]
+
+[workspace.dependencies]
+num-complex = { version = "0.4", features = ["serde"] }
+rustfft = "6.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+thiserror = "2.0"
+hound = "3.5"
+clap = { version = "4.5", features = ["derive"] }
+rayon = "1.10"
+
+acoustics-types = { path = "crates/acoustics-types" }
+acoustics-math = { path = "crates/acoustics-math" }
+acoustics-oracles = { path = "crates/acoustics-oracles" }
+acoustics-mesh = { path = "crates/acoustics-mesh" }
+acoustics-dsp = { path = "crates/acoustics-dsp" }
+acoustics-network = { path = "crates/acoustics-network" }
+acoustics-bem = { path = "crates/acoustics-bem" }
+acoustics-nonlinear = { path = "crates/acoustics-nonlinear" }
+acoustics-io = { path = "crates/acoustics-io" }
+acoustics-calibration = { path = "crates/acoustics-calibration" }
+speaker-engine = { path = "crates/speaker-engine" }

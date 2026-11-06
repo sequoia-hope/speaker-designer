@@ -1,0 +1,17 @@
+[package]
+name = "speaker-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "WebAssembly (wasm32-unknown-unknown) live parametric simulation & 3D CAD bridge for the Speaker Designer Workbench"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+acoustics-types.workspace = true
+speaker-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true

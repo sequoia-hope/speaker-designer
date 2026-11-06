@@ -1,0 +1,619 @@
+id = "09-mastering-tower-chronos-mtm"
+title = "Chronos-MTM — Symmetric D'Appolito Mastering Tower (CLD Birch + Billet Alu)"
+category = "Studio Monitors"
+description = """Full-range 25 Hz–20 kHz floorstanding mastering tower combining a symmetric Joseph D'Appolito M-T-M upper array (dual 5.5" midwoofers flanking a shallow 6061-T6 OS-SE Beryllium tweeter) with a dedicated lower 10" flared-slot bass-reflex subwoofer."""
+design_notes = [
+    """D'Appolito Vertical Directivity Control: Placing two 5.5" midwoofers symmetrically ±150 mm above and below the 1" OS-SE tweeter creates a virtual acoustic point source at z = 840 mm while narrowing vertical dispersion between 600–2000 Hz — cutting studio desk, floor, and ceiling early reflections by 4–6 dB!""",
+    "The 2/3-Wavelength MTM Crossover Rule: Open Spinorama & Polar Sonograms and switch between Variant 1 (1.75 kHz crossover, d ≈ 0.87λ) and Variant 2 (3.3 kHz crossover, d ≈ 2.9λ). At 3.3 kHz, severe ±20° vertical interference comb nulls slice through the Vertical Sonogram and Early Reflections DI!",
+    "Constrained-Layer Damped (CLD) Tall Enclosure: Tall 1.14 m towers suffer severe pipe & side-wall bending resonances unless braced and damped; 21 mm CLD viscoelastic birch + 3 window braces + 2 isolated sealed MTM sub-chambers push panel coloration below -42 dB.",
+]
+
+[environment]
+temperature_k = 293.15
+pressure_pa = 101325.0
+relative_humidity = 0.5
+
+[settings]
+freq_min_hz = 22.0
+freq_max_hz = 20000.0
+num_freqs = 80
+small_signal_volts_rms = 2.83
+high_spl_volts_rms = 24.0
+enable_3d_bem = true
+field_bounds_m = [
+    -3.5,
+    3.5,
+    -1.5,
+    5.0,
+]
+field_grid_nx = 38
+field_grid_ny = 38
+listener_height_m = 0.84
+reference_mic_m = [
+    0.0,
+    2.5,
+    0.84,
+]
+
+[[drivers]]
+id = "alu_wf_85"
+name = '8.5" Anodized Alu-Cone Studio Woofer'
+category = "studio-lf"
+
+[drivers.small_signal]
+re_ohm = 5.6
+bl_t_m = 11.6
+mms_kg = 0.039
+cms_m_per_n = 0.00064
+creep_lambda = 0.018
+rms_n_s_m = 1.45
+sd_m2 = 0.024
+xmax_m = 0.0095
+xmech_m = 0.015
+pe_max_w = 250.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00065
+l2_h = 0.00045
+r2_ohm = 9.5
+
+[drivers.nonlinear]
+bl_poly = [
+    0.015,
+    -0.21,
+    -0.01,
+    -0.04,
+]
+kms_poly = [
+    -0.02,
+    0.28,
+    0.02,
+    0.18,
+]
+le_x_poly = [
+    -0.08,
+    0.03,
+]
+le_current_factor = 0.004
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "neo_mid_40"
+name = '4.0" Shorting-Ring Neodymium Midrange'
+category = "studio-mf"
+
+[drivers.small_signal]
+re_ohm = 5.8
+bl_t_m = 6.1
+mms_kg = 0.0046
+cms_m_per_n = 0.00072
+creep_lambda = 0.012
+rms_n_s_m = 0.55
+sd_m2 = 0.0055
+xmax_m = 0.004
+xmech_m = 0.007
+pe_max_w = 100.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00016
+l2_h = 0.00012
+r2_ohm = 11.0
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "be_dome_10"
+name = '1.0" Beryllium Dome Tweeter'
+category = "studio-hf"
+
+[drivers.small_signal]
+re_ohm = 5.4
+bl_t_m = 3.3
+mms_kg = 0.00036
+cms_m_per_n = 0.000135
+creep_lambda = 0.0
+rms_n_s_m = 0.32
+sd_m2 = 0.00062
+xmax_m = 0.0012
+xmech_m = 0.0022
+pe_max_w = 60.0
+
+[drivers.small_signal.inductance]
+model = "simple"
+le_h = 0.000035
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "sub_wf_10"
+name = '10" Sandwich-Carbon Mastering Tower Subwoofer'
+category = "studio-lf"
+
+[drivers.small_signal]
+re_ohm = 5.5
+bl_t_m = 15.8
+mms_kg = 0.082
+cms_m_per_n = 0.00036
+creep_lambda = 0.016
+rms_n_s_m = 2.3
+sd_m2 = 0.0345
+xmax_m = 0.013
+xmech_m = 0.02
+pe_max_w = 450.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00088
+l2_h = 0.00054
+r2_ohm = 10.5
+
+[drivers.nonlinear]
+bl_poly = [
+    0.012,
+    -0.18,
+    -0.008,
+    -0.03,
+]
+kms_poly = [
+    -0.015,
+    0.22,
+    0.01,
+    0.14,
+]
+le_x_poly = [
+    -0.07,
+    0.02,
+]
+le_current_factor = 0.0035
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "mtm_mid_55"
+name = '5.5" Sliced-Paper Shorting-Ring MTM Midwoofer'
+category = "studio-mf"
+
+[drivers.small_signal]
+re_ohm = 5.9
+bl_t_m = 7.4
+mms_kg = 0.0105
+cms_m_per_n = 0.00078
+creep_lambda = 0.012
+rms_n_s_m = 0.72
+sd_m2 = 0.0098
+xmax_m = 0.006
+xmech_m = 0.01
+pe_max_w = 140.0
+
+[drivers.small_signal.inductance]
+model = "l2_r2"
+le_h = 0.00022
+l2_h = 0.00016
+r2_ohm = 11.5
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[cabinets]]
+id = "chronos_mtm"
+name = "Chronos-MTM Symmetric D'Appolito Mastering Tower"
+subtitle = '31×44×114 cm · 21 mm CLD Viscoelastic Birch + 30 mm 6061-T6 Alu Baffle · 10" Sub + Dual 5.5" M-T-M'
+dims_m = [
+    0.31,
+    0.44,
+    1.14,
+]
+edge_round_m = 0.028
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.021
+front_baffle_thickness_m = 0.03
+internal_partition_thickness_m = 0.018
+brace_thickness_m = 0.018
+brace_count = 3
+driver_rebate_depth_m = 0.007
+damping_lining_thickness_m = 0.028
+joinery = "miter45"
+
+[cabinets.construction.enclosure_material]
+name = "CLD Constrained-Layer Birch + Viscoelastic Core"
+kind = "cld_birch_viscoelastic"
+density_kg_m3 = 740.0
+youngs_modulus_gpa = 9.6
+poisson_ratio = 0.31
+loss_factor_eta = 0.085
+color_hex = "#c9935b"
+finish = "Satin Studio Catalyzed Varnish"
+
+[cabinets.construction.baffle_material]
+name = "CNC 6061-T6 Billet Aluminum"
+kind = "cast_aluminum6061"
+density_kg_m3 = 2700.0
+youngs_modulus_gpa = 68.9
+poisson_ratio = 0.33
+loss_factor_eta = 0.015
+color_hex = "#9fb3c8"
+finish = "Bead-Blasted Hard Black Anodized"
+
+[[cabinets.ways]]
+way_id = "sub10"
+label = '10" Vented Sub'
+driver_id = "sub_wf_10"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.34
+
+[cabinets.ways.enclosure]
+topology = "vented"
+volume_m3 = 0.058
+leakage_ql = 16.0
+
+[cabinets.ways.enclosure.port]
+area_m2 = 0.0092
+length_m = 0.31
+flare_radius_m = 0.02
+
+[cabinets.ways.enclosure.port.local_exit_offset]
+x = 0.0
+y = 0.0
+z = 0.08
+
+[cabinets.ways.enclosure.port.local_normal]
+x = 0.0
+y = 1.0
+z = 0.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 8000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.22
+
+[[cabinets.ways]]
+way_id = "mid_lo"
+label = 'Lower 5.5" MTM Mid'
+driver_id = "mtm_mid_55"
+driver_count = 1
+dsp_channel_index = 1
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.69
+
+[cabinets.ways.enclosure]
+topology = "sealed"
+volume_m3 = 0.0065
+leakage_ql = 22.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 8000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.45
+
+[[cabinets.ways]]
+way_id = "hf_be"
+label = '1" Beryllium OS-SE Tweeter'
+driver_id = "be_dome_10"
+driver_count = 1
+dsp_channel_index = 2
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.84
+
+[cabinets.ways.enclosure]
+topology = "waveguide_loaded"
+rear_volume_m3 = 0.0005
+throat_chamber_m3 = 0.00002
+
+[cabinets.ways.enclosure.waveguide]
+length_m = 0.036
+throat_area_m2 = 0.00068
+mouth_area_m2 = 0.0125
+aspect_ratio = 1.0
+
+[cabinets.ways.enclosure.waveguide.contour]
+law = "os_se"
+coverage_h_deg = 95.0
+coverage_v_deg = 75.0
+
+[[cabinets.ways]]
+way_id = "mid_hi"
+label = 'Upper 5.5" MTM Mid'
+driver_id = "mtm_mid_55"
+driver_count = 1
+dsp_channel_index = 1
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.99
+
+[cabinets.ways.enclosure]
+topology = "sealed"
+volume_m3 = 0.0065
+leakage_ql = 22.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 8000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.45
+
+[[zones]]
+id = "mastering_sofa"
+label = "Mastering Listening Window (2.0–3.2 m)"
+role = "sweet_spot"
+x_min_m = -0.8
+x_max_m = 0.8
+y_min_m = 2.0
+y_max_m = 3.2
+z_ear_m = 0.84
+
+[[variants]]
+variant_id = "dappolito_1750hz"
+label = "Aligned D'Appolito (1.75 kHz Waveguide-Matched LR24)"
+summary = "Coherent symmetric vertical main lobe with suppressed floor/ceiling bounce and smooth CTA-2034 ERDI."
+
+[variants.boundary]
+space = "free4_pi"
+
+[[variants.dsp_channels]]
+id = "mtm_sub"
+label = '10" Sub (24–160 Hz LR24)'
+gain_db = 2.2
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 23.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 160.0
+
+[[variants.dsp_channels]]
+id = "mtm_mids"
+label = 'Symmetric Dual 5.5" MTM (160–1750 Hz LR24)'
+gain_db = -2.8
+invert_polarity = false
+delay_s = 0.00008
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 160.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1750.0
+
+[[variants.dsp_channels]]
+id = "mtm_hf"
+label = '1" Be OS-SE Tweeter (1.75–20 kHz LR24)'
+gain_db = -5.4
+invert_polarity = false
+delay_s = 0.00018
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 1750.0
+
+[[variants.placements]]
+instance_id = "mtm_main"
+label = "Chronos-MTM"
+cabinet_spec_id = "chronos_mtm"
+way_dsp_channels = [
+    "mtm_sub",
+    "mtm_mids",
+    "mtm_hf",
+    "mtm_mids",
+]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0
+
+[[variants]]
+variant_id = "misaligned_3300hz"
+label = "Comparison: High 3.3 kHz Crossover (Vertical MTM Lobing)"
+summary = "Inspect Vertical Polar Sonogram at 2.2–3.5 kHz to see severe off-axis MTM comb nulls."
+
+[variants.boundary]
+space = "free4_pi"
+
+[[variants.dsp_channels]]
+id = "mtm_sub"
+label = '10" Sub (24–160 Hz LR24)'
+gain_db = 2.2
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 23.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 160.0
+
+[[variants.dsp_channels]]
+id = "mtm_mids"
+label = 'Dual 5.5" MTM (Stretched to 3.3 kHz — Lobing!)'
+gain_db = -2.8
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 160.0
+
+[variants.dsp_channels.lowpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 3300.0
+
+[[variants.dsp_channels]]
+id = "mtm_hf"
+label = '1" Be Tweeter (> 3.3 kHz)'
+gain_db = -5.4
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "linkwitz_riley"
+order = 4
+freq_hz = 3300.0
+
+[[variants.placements]]
+instance_id = "mtm_hi"
+label = "Chronos-MTM (3.3 kHz XO)"
+cabinet_spec_id = "chronos_mtm"
+way_dsp_channels = [
+    "mtm_sub",
+    "mtm_mids",
+    "mtm_hf",
+    "mtm_mids",
+]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0

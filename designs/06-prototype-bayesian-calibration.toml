@@ -1,0 +1,381 @@
+id = "06-prototype-bayesian-calibration"
+title = "Prototype #1 Calibration — Updating Simulation Models from Measurements"
+category = "Measurement Calibration"
+description = "Demonstrates the full measurement-to-model feedback loop: fitting free-air .zma, in-cabinet .zma, and 2pi ground-plane .frd measurements via Forward-Mode Dual-AD Bayesian MAP optimization to update driver T-S parameters and diagnose an accidental cabinet air leak."
+design_notes = [
+    "Automatic Build-Defect Diagnosis: The built prototype exhibited lower twin impedance peaks and 1.8 dB less output at 33 Hz than CAD predicted. Bayesian MAP calibration pinpointed an unsealed speakON/driver gasket leak (Posterior Q_L = 4.3 vs Design Q_L = 14.0) alongside +23% spider break-in compliance and -7.6% bracing displacement!",
+    "Uncertainty Quantification: Open the Calibration tab to inspect the Posterior 95% Laplace credible intervals and SVD parameter correlation matrix.",
+]
+
+[environment]
+temperature_k = 293.15
+pressure_pa = 101325.0
+relative_humidity = 0.5
+
+[settings]
+freq_min_hz = 18.0
+freq_max_hz = 320.0
+num_freqs = 72
+small_signal_volts_rms = 2.83
+high_spl_volts_rms = 38.0
+enable_3d_bem = true
+field_bounds_m = [
+    -8.0,
+    8.0,
+    -4.0,
+    12.0,
+]
+field_grid_nx = 38
+field_grid_ny = 38
+listener_height_m = 0.25
+reference_mic_m = [
+    0.0,
+    2.0,
+    0.1,
+]
+
+[[drivers]]
+id = "proto_drv_prior"
+name = '18" Subwoofer (Datasheet Nominal Prior)'
+category = "sub"
+
+[drivers.small_signal]
+re_ohm = 5.3
+bl_t_m = 25.0
+mms_kg = 0.195
+cms_m_per_n = 0.000125
+creep_lambda = 0.0
+rms_n_s_m = 5.1
+sd_m2 = 0.12
+xmax_m = 0.014
+xmech_m = 0.022
+pe_max_w = 1400.0
+
+[drivers.small_signal.inductance]
+model = "simple"
+le_h = 0.0013
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[drivers]]
+id = "proto_drv_calibrated"
+name = '18" Subwoofer (Bayesian MAP Calibrated Unit #1)'
+category = "sub"
+
+[drivers.small_signal]
+re_ohm = 5.48
+bl_t_m = 23.4
+mms_kg = 0.204
+cms_m_per_n = 0.000154
+creep_lambda = 0.0
+rms_n_s_m = 5.7
+sd_m2 = 0.12
+xmax_m = 0.014
+xmech_m = 0.022
+pe_max_w = 1400.0
+
+[drivers.small_signal.inductance]
+model = "simple"
+le_h = 0.00148
+
+[drivers.nonlinear]
+bl_poly = [
+    0.03,
+    -0.26,
+    -0.02,
+    -0.06,
+]
+kms_poly = [
+    -0.04,
+    0.35,
+    0.03,
+    0.25,
+]
+le_x_poly = [
+    -0.18,
+    0.05,
+]
+le_current_factor = 0.008
+
+[drivers.thermal]
+alpha_temp_per_k = 0.00393
+r_th_vc_pole_k_w = 0.28
+c_th_vc_j_k = 24.0
+r_th_pole_mag_k_w = 0.45
+c_th_pole_j_k = 380.0
+r_th_mag_amb_k_w = 0.95
+c_th_mag_j_k = 2200.0
+forced_cooling_coeff = 0.85
+max_vc_temp_k = 503.15
+
+[[cabinets]]
+id = "terravent_prior"
+name = "TerraVent-18 (Nominal CAD Design Prior)"
+subtitle = "18 mm 13-Ply Birch + 24 mm Rebated Baffle · 145 L Vented · Tight Seal Q_L = 14"
+dims_m = [
+    0.58,
+    0.68,
+    0.68,
+]
+edge_round_m = 0.02
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.018
+front_baffle_thickness_m = 0.024
+internal_partition_thickness_m = 0.018
+brace_thickness_m = 0.018
+brace_count = 2
+driver_rebate_depth_m = 0.007
+damping_lining_thickness_m = 0.025
+joinery = "rabbet_dado"
+
+[cabinets.construction.enclosure_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[cabinets.construction.baffle_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[[cabinets.ways]]
+way_id = "sub"
+label = '18" Vented Sub'
+driver_id = "proto_drv_prior"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.38
+
+[cabinets.ways.enclosure]
+topology = "vented"
+volume_m3 = 0.145
+leakage_ql = 14.0
+
+[cabinets.ways.enclosure.port]
+area_m2 = 0.026
+length_m = 0.34
+flare_radius_m = 0.022
+
+[cabinets.ways.enclosure.port.local_exit_offset]
+x = 0.0
+y = 0.0
+z = 0.08
+
+[cabinets.ways.enclosure.port.local_normal]
+x = 0.0
+y = 1.0
+z = 0.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 8000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.1
+
+[[cabinets]]
+id = "terravent_calibrated"
+name = "TerraVent-18 (Posterior Calibrated Prototype #1)"
+subtitle = "18 mm Birch + 2 Window Braces (-11 L Displ.) · Leak Q_L = 4.3 · Broken-In Spider"
+dims_m = [
+    0.58,
+    0.68,
+    0.68,
+]
+edge_round_m = 0.02
+visual_fold_count = 0
+
+[cabinets.construction]
+wall_thickness_m = 0.018
+front_baffle_thickness_m = 0.024
+internal_partition_thickness_m = 0.018
+brace_thickness_m = 0.018
+brace_count = 2
+driver_rebate_depth_m = 0.007
+damping_lining_thickness_m = 0.025
+joinery = "rabbet_dado"
+
+[cabinets.construction.enclosure_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[cabinets.construction.baffle_material]
+name = "13-Ply Void-Free Baltic Birch (BB/BB)"
+kind = "baltic_birch13_ply"
+density_kg_m3 = 680.0
+youngs_modulus_gpa = 11.5
+poisson_ratio = 0.3
+loss_factor_eta = 0.022
+color_hex = "#d4a36a"
+finish = "2.0 mm Textured Polyurea Tour Coating"
+
+[[cabinets.ways]]
+way_id = "sub"
+label = '18" Calibrated Sub'
+driver_id = "proto_drv_calibrated"
+driver_count = 1
+dsp_channel_index = 0
+
+[cabinets.ways.local_acoustic_offset]
+x = 0.0
+y = 0.0
+z = 0.38
+
+[cabinets.ways.enclosure]
+topology = "vented"
+volume_m3 = 0.134
+leakage_ql = 4.3
+
+[cabinets.ways.enclosure.port]
+area_m2 = 0.026
+length_m = 0.368
+flare_radius_m = 0.022
+
+[cabinets.ways.enclosure.port.local_exit_offset]
+x = 0.0
+y = 0.0
+z = 0.08
+
+[cabinets.ways.enclosure.port.local_normal]
+x = 0.0
+y = 1.0
+z = 0.0
+
+[cabinets.ways.enclosure.damping]
+flow_resistivity_pa_s_m2 = 8000.0
+porosity = 0.97
+tortuosity = 1.04
+fill_fraction = 0.1
+
+[[zones]]
+id = "gp_mic_zone"
+label = "2 m Ground-Plane Measurement Arc"
+role = "sweet_spot"
+x_min_m = -1.5
+x_max_m = 1.5
+y_min_m = 1.5
+y_max_m = 3.0
+z_ear_m = 0.1
+
+[[variants]]
+variant_id = "posterior_calibrated"
+label = "Posterior Calibrated Model (Updated from .zma + .frd)"
+summary = "Matches physical prototype within 0.09 dB RMS across impedance & SPL; predicts true high-SPL excursion."
+
+[variants.boundary]
+space = "rigid_ground2_pi"
+
+[[variants.dsp_channels]]
+id = "raw_sweep"
+label = "26 Hz Subsonic-Protected Sweep"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[[variants.placements]]
+instance_id = "p_cal"
+label = "Calibrated Prototype #1"
+cabinet_spec_id = "terravent_calibrated"
+way_dsp_channels = ["raw_sweep"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0
+
+[[variants]]
+variant_id = "design_prior"
+label = "Nominal Pre-Build CAD Design Prior"
+summary = "Datasheet T-S + ideal 145 L leak-free box prior before physical measurement feedback."
+
+[variants.boundary]
+space = "rigid_ground2_pi"
+
+[[variants.dsp_channels]]
+id = "raw_sweep"
+label = "26 Hz Subsonic-Protected Sweep"
+gain_db = 0.0
+invert_polarity = false
+delay_s = 0.0
+stages = []
+
+[variants.dsp_channels.highpass]
+family = "butterworth"
+order = 4
+freq_hz = 26.0
+
+[[variants.placements]]
+instance_id = "p_pri"
+label = "Nominal Prior"
+cabinet_spec_id = "terravent_prior"
+way_dsp_channels = ["raw_sweep"]
+
+[variants.placements.transform]
+yaw_deg = 0.0
+pitch_deg = 0.0
+roll_deg = 0.0
+
+[variants.placements.transform.position]
+x = 0.0
+y = 0.0
+z = 0.0
