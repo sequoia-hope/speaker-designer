@@ -11,7 +11,11 @@
   const d = $derived(driverFor(p));
   const geo = $derived(buildGeometry(p, d));
   const plan = $derived(planPrint(geo, home.hybrid.printer));
-  const issues = $derived(buildIssues(p, geo, d, plan, isSub));
+  const issues = $derived(buildIssues(p, geo, d, plan, home.hybrid.printer, isSub));
+  const solidPath = $derived(
+    [geo.core, ...geo.holes].map((poly) => 'M ' + poly.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(' L ') + ' Z').join(' ')
+  );
+  const lw = $derived(home.hybrid.printer.lineWidth);
   const sims = $derived.by(() => {
     if (p.type === 'waveguide') return [];
     const ns = isSub ? [1, 2, p.mouth === 'corner' ? 4 : 0].filter(Boolean) : [1];
@@ -49,22 +53,20 @@
         </div>
       </div>
       <div class="dimline">
-        {mm(dims.w)} W × {mm(dims.h)} H × {mm(dims.d)} D ({inch(dims.w)} × {inch(dims.h)} × {inch(dims.d)}) · core {p.extrusionMm} mm thick between two {p.plateMm} mm plates
+        {mm(dims.w)} W × {mm(dims.h)} H × {mm(dims.d)} D ({inch(dims.w)} × {inch(dims.h)} × {inch(dims.d)}) · {geo.cores > 1 ? `${geo.cores} printed cores of ${geo.coreMm.toFixed(0)} mm with ${geo.cores - 1} divider${geo.cores > 2 ? 's' : ''}` : `core ${geo.coreMm.toFixed(0)} mm thick`} between two {p.plateMm} mm plates
       </div>
       {#if view === 'section'}
         <div class="svg-wrap sect">
           <svg viewBox={`-60 -40 ${geo.W + 120} ${geo.H + 90}`} role="img" aria-label="Cross-section">
             <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
-              <rect x="0" y="0" width={geo.W} height={geo.H} class="print" />
-              {#each geo.air as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="air" />{/each}
-              {#each geo.airPolys as poly}<polygon points={poly.map(([x, y]) => `${x},${y}`).join(' ')} class="air" />{/each}
+              <path d={solidPath} class="print" fill-rule="evenodd" />
               {#if geo.mouthRect}<rect x={geo.mouthRect.x0 - 4} y={geo.mouthRect.y0} width="8" height={geo.mouthRect.y1 - geo.mouthRect.y0} class="mouth" />{/if}
               <!-- driver -->
               <rect x={geo.driver.x - 6} y={geo.driver.y - geo.driver.dia / 2} width="12" height={geo.driver.dia} class="drv" />
               <path d={`M ${geo.driver.x} ${geo.driver.y - geo.driver.dia * 0.45} L ${geo.driver.x + (geo.driver.face === 'front' ? -1 : 1) * geo.driver.dia * 0.28} ${geo.driver.y} L ${geo.driver.x} ${geo.driver.y + geo.driver.dia * 0.45}`} class="cone" />
             </g>
-            {#each geo.air.filter((r) => r.label) as r}
-              <text x={(r.x0 + r.x1) / 2} y={geo.H - (r.y0 + r.y1) / 2 + 5} text-anchor="middle" class="lbl">{r.label}</text>
+            {#each geo.labels as l}
+              <text x={l.x} y={geo.H - l.y + 5} text-anchor="middle" class="lbl">{l.text}</text>
             {/each}
             <text x={geo.W + 8} y={geo.H - ((geo.mouthRect?.y0 ?? 0) + (geo.mouthRect?.y1 ?? 0)) / 2} class="lbl mouthlbl">{isSub ? 'mouth →' : p.type === 'waveguide' ? 'mouth →' : 'exit →'}</text>
             <line x1="0" y1={geo.H + 22} x2={geo.W} y2={geo.H + 22} class="dim" />
@@ -73,7 +75,7 @@
             <text x="-30" y={geo.H / 2} text-anchor="middle" class="dimtxt" transform={`rotate(-90 -30 ${geo.H / 2})`}>{mm(geo.H)}</text>
           </svg>
         </div>
-        <p class="small muted">Grey = printed plastic, dark = air. This profile is extruded {p.extrusionMm} mm (into the screen) and closed on both sides by the wooden plates.</p>
+        <p class="small muted">Grey = printed plastic, dark = air. This profile is extruded {geo.coreMm.toFixed(0)} mm (into the screen){geo.cores > 1 ? ` as ${geo.cores} cores separated by ${geo.cores - 1} plywood divider${geo.cores > 2 ? 's' : ''}` : ''} and closed on both sides by the wooden plates. Bends sweep round, wall tips are half-round and the mouth lips roll out — the shapes 3D printing makes easy.</p>
       {:else if view === '3d'}
         <div class="vis-3d">
           <Hybrid3D {geo} {plan} plateMm={p.plateMm} plateColor={p.plateMaterial === 'mdf19' ? 0x9c7a55 : 0xcfa874} coupled={showCoupled && isSub ? (p.mouth === 'corner' ? 4 : 2) : 1} mouth={p.mouth} />
@@ -85,15 +87,13 @@
         <div class="svg-wrap sect">
           <svg viewBox={`-30 -30 ${geo.W + 60} ${geo.H + 60}`} role="img" aria-label="Print layout">
             <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
-              <rect x="0" y="0" width={geo.W} height={geo.H} class="print" />
-              {#each geo.air as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="air dim2" />{/each}
-              {#each geo.airPolys as poly}<polygon points={poly.map(([x, y]) => `${x},${y}`).join(' ')} class="air dim2" />{/each}
+              <path d={solidPath} class="print" fill-rule="evenodd" />
               {#each plan.cutsX as c}<line x1={c} y1="-10" x2={c} y2={geo.H + 10} class="cut" />{/each}
               {#each plan.cutsY as c}<line x1="-10" y1={c} x2={geo.W + 10} y2={c} class="cut" />{/each}
               {#each plan.keys as k}<rect x={k.x - 6} y={k.y - 6} width="12" height="12" class="key" transform={`rotate(45 ${k.x} ${k.y})`} />{/each}
             </g>
-            {#each plan.segments.filter((sg) => sg.z0 === 0) as sg}
-              <text x={(sg.x0 + sg.x1) / 2} y={geo.H - (sg.y0 + sg.y1) / 2} text-anchor="middle" class="seglbl">{sg.id.split('·')[0]}</text>
+            {#each plan.segments.filter((sg) => sg.z0 === 0 && sg.core === 0) as sg}
+              <text x={(sg.x0 + sg.x1) / 2} y={geo.H - (sg.y0 + sg.y1) / 2} text-anchor="middle" class="seglbl">{sg.tile}</text>
             {/each}
           </svg>
         </div>
@@ -102,14 +102,14 @@
           {#if plan.cutsZ.length}in {plan.cutsZ.length + 1} layers of ≤ {home.hybrid.printer.maxZ} mm{/if}.
         </p>
         <div class="beds">
-          {#each plan.segments.filter((sg) => sg.z0 === 0) as sg}
+          {#each plan.segments.filter((sg) => sg.z0 === 0 && sg.core === 0) as sg}
             <div class="bed">
               <svg viewBox={`0 0 ${home.hybrid.printer.bedX} ${home.hybrid.printer.bedY}`}>
                 <rect x="0" y="0" width={home.hybrid.printer.bedX} height={home.hybrid.printer.bedY} class="bedrect" />
                 <rect x={home.hybrid.printer.margin} y={home.hybrid.printer.margin} width={home.hybrid.printer.bedX - 2 * home.hybrid.printer.margin} height={home.hybrid.printer.bedY - 2 * home.hybrid.printer.margin} class="bedmargin" />
                 <rect x={home.hybrid.printer.margin} y={home.hybrid.printer.margin} width={sg.bedW} height={sg.bedH} class="part" />
               </svg>
-              <span>{sg.id.split('·')[0]} · {Math.round(sg.bedW)}×{Math.round(sg.bedH)}</span>
+              <span>{sg.tile} · {Math.round(sg.bedW)}×{Math.round(sg.bedH)}</span>
             </div>
           {/each}
         </div>
@@ -159,13 +159,31 @@
     {/if}
     <section class="card">
       <h2>Size & profile</h2>
-      {#each [['heightMm', 'Height', 200, 1400, 10], ['depthMm', 'Depth (profile width)', 120, 1400, 10], ['extrusionMm', 'Core thickness (between plates)', 60, 900, 5], ['wallMm', 'Printed wall thickness', 3, 15, 1]] as [k, lbl, mn, mx, st]}
-        {@const key = k as 'heightMm' | 'depthMm' | 'extrusionMm' | 'wallMm'}
+      {#each [['heightMm', 'Height', 200, 1400, 10], ['depthMm', 'Depth (profile width)', 120, 1400, 10], ['extrusionMm', 'Width between the outer plates', 60, 900, 5]] as [k, lbl, mn, mx, st]}
+        {@const key = k as 'heightMm' | 'depthMm' | 'extrusionMm'}
         <div class="field">
           <label for={`h-${key}`}>{lbl}</label><span class="val">{p[key]} mm</span>
           <input id={`h-${key}`} type="range" min={mn} max={mx} step={st} bind:value={p[key]} />
         </div>
       {/each}
+      <div class="field">
+        <label for="h-wall">Printed wall thickness</label>
+        <span class="val">{p.wallMm.toFixed(1)} mm = {Math.round(p.wallMm / lw)} lines</span>
+        <span class="hint">Snaps to whole {lw} mm lines. Chunky walls are stiffer; the flex check below tells you if they are enough.</span>
+        <input id="h-wall" type="range" min={lw * 3} max={lw * 16} step={lw} value={p.wallMm} oninput={(e) => (p.wallMm = Math.round(+(e.target as HTMLInputElement).value / lw) * lw)} />
+      </div>
+      <div class="field">
+        <label for="h-div">Plywood dividers inside the core</label>
+        <span class="val">{p.dividers} → {geo.cores} printed core{geo.cores > 1 ? 's' : ''} of {geo.coreMm.toFixed(0)} mm</span>
+        <span class="hint">Each divider halves the span the printed walls bridge — ~4× stiffer — and makes each core a shorter print.</span>
+        <input id="h-div" type="range" min="0" max="3" step="1" bind:value={p.dividers} />
+      </div>
+      <div class="field">
+        <label for="h-round">Organic rounding</label>
+        <span class="val">{Math.round(p.rounding * 100)} %</span>
+        <span class="hint">0 = square corners; 100 % = bends as round as the space allows.</span>
+        <input id="h-round" type="range" min="0" max="1" step="0.05" bind:value={p.rounding} />
+      </div>
       <div class="chips">
         {#each [['bb18', 18, '18 mm birch'], ['bb12', 12, '12 mm birch'], ['mdf19', 19, '19 mm MDF']] as [id, t, lbl]}
           <button class="chip" class:on={p.plateMaterial === id} onclick={() => { p.plateMaterial = id as 'bb18' | 'bb12' | 'mdf19'; p.plateMm = t as number; }}>{lbl} plates</button>
@@ -221,15 +239,15 @@
     <section class="card">
       <h2>Printing</h2>
       <div class="bedin">
-        {#each [['bedX', 'Bed X'], ['bedY', 'Bed Y'], ['maxZ', 'Max Z'], ['margin', 'Margin']] as [k, lbl]}
-          {@const key = k as 'bedX' | 'bedY' | 'maxZ' | 'margin'}
-          <label>{lbl}<input type="number" min="50" max="1000" bind:value={home.hybrid.printer[key]} /></label>
+        {#each [['bedX', 'Bed X', 1], ['bedY', 'Bed Y', 1], ['maxZ', 'Max Z', 1], ['margin', 'Margin', 1], ['nozzle', 'Nozzle', 0.1], ['lineWidth', 'Line width', 0.05], ['layerH', 'Layer', 0.05], ['flow', 'Flow mm³/s', 1]] as [k, lbl, st]}
+          {@const key = k as 'bedX' | 'bedY' | 'maxZ' | 'margin' | 'nozzle' | 'lineWidth' | 'layerH' | 'flow'}
+          <label>{lbl}<input type="number" min="0" max="1000" step={st} bind:value={home.hybrid.printer[key]} /></label>
         {/each}
       </div>
       <div class="stats">
-        <div class="stat"><div class="k">Segments</div><div class="v">{plan.segments.length}</div><div class="s">{plan.cutsX.length + 1} × {plan.cutsY.length + 1} tiles{plan.cutsZ.length ? ` × ${plan.cutsZ.length + 1} layers` : ''}</div></div>
+        <div class="stat"><div class="k">Segments</div><div class="v">{plan.segments.length}</div><div class="s">{geo.cores > 1 ? `${geo.cores} cores × ` : ''}{plan.cutsX.length + 1} × {plan.cutsY.length + 1} tiles{plan.cutsZ.length ? ` × ${plan.cutsZ.length + 1} layers` : ''}</div></div>
         <div class="stat"><div class="k">Alignment keys</div><div class="v">{plan.keys.length}</div><div class="s">+ dowels between layers</div></div>
-        <div class="stat"><div class="k">Filament</div><div class="v">{(plan.totalGrams / 1000).toFixed(1)} kg</div><div class="s">PETG est. (walls dense, 40 % gyroid)</div></div>
+        <div class="stat"><div class="k">Filament / time</div><div class="v">{(plan.totalGrams / 1000).toFixed(1)} kg</div><div class="s">~{plan.hours.toFixed(0)} h at {home.hybrid.printer.flow} mm³/s · {plan.layers} layers per core</div></div>
         <div class="stat"><div class="k">Largest piece</div><div class="v sm">{Math.round(Math.max(...plan.segments.map((s) => s.bedW)))} × {Math.round(Math.max(...plan.segments.map((s) => s.bedH)))} mm</div><div class="s">fits {plan.usable[0]} × {plan.usable[1]} usable</div></div>
       </div>
       <table class="tbl" style="margin-top:8px">
@@ -276,6 +294,8 @@
   }
   :global(.print) {
     fill: #9ca3af;
+    stroke: #e5e7eb;
+    stroke-width: 1;
   }
   :global(.air) {
     fill: #0b1020;
@@ -368,6 +388,7 @@
   .bedin {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
+    row-gap: 8px;
     gap: 6px;
   }
   .bedin label {

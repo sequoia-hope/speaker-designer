@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import * as THREE from 'three';
   import { createViewer, type Viewer } from './three3d';
-  import { isAir, type Geometry, type PrintPlan } from './hybrid';
+  import type { Geometry, PrintPlan } from './hybrid';
 
   let {
     geo,
@@ -26,55 +26,51 @@
   let showPlates = $state(true);
   let framedKey = '';
 
-  const SEG_COLORS = [0xe5e7eb, 0x93c5fd, 0xfca5a5, 0x86efac, 0xfcd34d, 0xc4b5fd, 0xf9a8d4, 0x67e8f9];
 
-  /** Solid printed core as merged boxes on the grid of all rectangle edges + print cuts. */
+  /** Printed cores: the filleted outline extruded, one per core, with plywood dividers between. */
   function coreGroup(): THREE.Group {
     const s = 0.001;
     const g = new THREE.Group();
-    const xs = new Set<number>([0, geo.W, ...plan.cutsX]);
-    const ys = new Set<number>([0, geo.H, ...plan.cutsY]);
-    for (const r of geo.air) {
-      xs.add(Math.max(0, Math.min(geo.W, r.x0)));
-      xs.add(Math.max(0, Math.min(geo.W, r.x1)));
-      ys.add(Math.max(0, Math.min(geo.H, r.y0)));
-      ys.add(Math.max(0, Math.min(geo.H, r.y1)));
-    }
-    // waveguide polygons: sample finer so the flare reads as a staircase
-    if (geo.airPolys.length) {
-      for (let x = 0; x <= geo.W; x += 6) xs.add(x);
-      for (let y = 0; y <= geo.H; y += 6) ys.add(y);
-    }
-    const X = [...xs].sort((a, b) => a - b);
-    const Y = [...ys].sort((a, b) => a - b);
-    const zc = [0, ...plan.cutsZ, geo.E];
-    const segIndex = (x: number, y: number, z: number) => {
-      const i = plan.segments.findIndex((sg) => x >= sg.x0 && x <= sg.x1 && y >= sg.y0 && y <= sg.y1 && z >= sg.z0 && z <= sg.z1);
-      return Math.max(0, i);
-    };
-    const mats = SEG_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.55 }));
-    for (let k = 0; k < zc.length - 1; k++) {
-      for (let j = 0; j < Y.length - 1; j++) {
-        let run0 = -1;
-        for (let i = 0; i <= X.length - 1; i++) {
-          const solid = i < X.length - 1 && !isAir(geo, (X[i] + X[i + 1]) / 2, (Y[j] + Y[j + 1]) / 2);
-          // break runs at print cuts so each segment gets its own colour
-          const atCut = plan.cutsX.includes(X[i]);
-          if (run0 >= 0 && (!solid || atCut)) {
-            const x0 = X[run0];
-            const x1 = X[i];
-            const y0 = Y[j];
-            const y1 = Y[j + 1];
-            const box = new THREE.Mesh(
-              new THREE.BoxGeometry((zc[k + 1] - zc[k]) * s, (y1 - y0) * s, (x1 - x0) * s),
-              mats[segIndex((x0 + x1) / 2, (y0 + y1) / 2, (zc[k] + zc[k + 1]) / 2) % mats.length]
-            );
-            box.position.set(((zc[k] + zc[k + 1]) / 2 - geo.E / 2) * s, ((y0 + y1) / 2) * s, ((x0 + x1) / 2 - geo.W / 2) * s);
-            g.add(box);
-            run0 = -1;
-          }
-          if (solid && run0 < 0) run0 = i;
-        }
+    const shape = new THREE.Shape(geo.core.map(([x, y]) => new THREE.Vector2(x * s, y * s)));
+    for (const h of geo.holes) shape.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x * s, y * s))));
+    const coreGeo = new THREE.ExtrudeGeometry(shape, { depth: geo.coreMm * s, bevelEnabled: false, curveSegments: 4 });
+    const printMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.6, side: THREE.DoubleSide });
+    const divMat = new THREE.MeshStandardMaterial({ color: plateColor, roughness: 0.7 });
+    const seamMat = new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+    const z0 = -geo.Etot / 2;
+    for (let c = 0; c < geo.cores; c++) {
+      const zc = z0 + c * (geo.coreMm + plateMm);
+      const m = new THREE.Mesh(coreGeo, printMat);
+      // profile x → depth (three z), profile y → height, extrusion → three x
+      m.rotation.y = -Math.PI / 2;
+      // after the rotation the extrusion runs toward −x, so offset by the core thickness
+      m.position.set((zc + geo.coreMm) * s, 0, -(geo.W / 2) * s);
+      const holder = new THREE.Group();
+      holder.add(m);
+      // seams: thin red planes where the core is cut into printed pieces
+      for (const cx of plan.cutsX) {
+        const pl = new THREE.Mesh(new THREE.PlaneGeometry(geo.coreMm * s, geo.H * s), seamMat);
+        pl.position.set((zc + geo.coreMm / 2) * s, (geo.H / 2) * s, (cx - geo.W / 2) * s);
+        holder.add(pl);
+      }
+      for (const cy of plan.cutsY) {
+        const pl = new THREE.Mesh(new THREE.PlaneGeometry(geo.coreMm * s, geo.W * s), seamMat);
+        pl.rotation.x = -Math.PI / 2;
+        pl.position.set((zc + geo.coreMm / 2) * s, cy * s, 0);
+        holder.add(pl);
+      }
+      for (const cz of plan.cutsZ) {
+        const pl = new THREE.Mesh(new THREE.PlaneGeometry(geo.W * s, geo.H * s), seamMat);
+        pl.rotation.y = Math.PI / 2;
+        pl.position.set((zc + cz) * s, (geo.H / 2) * s, 0);
+        holder.add(pl);
+      }
+      g.add(holder);
+      if (c < geo.cores - 1) {
+        const dv = new THREE.Mesh(new THREE.ExtrudeGeometry(new THREE.Shape(outline()), { depth: plateMm * s, bevelEnabled: false }), divMat);
+        dv.rotation.y = -Math.PI / 2;
+        dv.position.set((zc + geo.coreMm + plateMm) * s, 0, -(geo.W / 2) * s);
+        g.add(dv);
       }
     }
     // driver
@@ -88,13 +84,28 @@
     cone.rotation.x = -Math.PI / 2;
     cone.position.z = -r * 0.25;
     drv.add(cone);
-    const magnet = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.45, r * 0.45, r * 0.5, 32), new THREE.MeshStandardMaterial({ color: 0x111113, metalness: 0.6 }));
-    magnet.rotation.x = Math.PI / 2;
-    magnet.position.z = -r * 0.75;
-    drv.add(magnet);
     drv.position.set(0, d.y * s, (d.x - geo.W / 2) * s);
     g.add(drv);
     return g;
+  }
+
+  /** Outer outline of the cabinet (rounded rectangle following the core's outer corners). */
+  function outline(): THREE.Vector2[] {
+    const s = 0.001;
+    const r = Math.min(25, geo.W / 4, geo.H / 4);
+    const pts: THREE.Vector2[] = [];
+    const corners: [number, number, number][] = [
+      [geo.W - r, r, -Math.PI / 2],
+      [geo.W - r, geo.H - r, 0],
+      [r, geo.H - r, Math.PI / 2],
+      [r, r, Math.PI],
+    ];
+    for (const [cx, cy, a0] of corners)
+      for (let i = 0; i <= 6; i++) {
+        const a = a0 + (i / 6) * (Math.PI / 2);
+        pts.push(new THREE.Vector2((cx + r * Math.cos(a)) * s, (cy + r * Math.sin(a)) * s));
+      }
+    return pts;
   }
 
   function cabinet(): THREE.Group {
@@ -103,10 +114,13 @@
     cab.add(coreGroup());
     if (showPlates) {
       const plateMat = new THREE.MeshStandardMaterial({ color: plateColor, roughness: 0.7, transparent: true, opacity: 0.92 });
+      const pg = new THREE.ExtrudeGeometry(new THREE.Shape(outline()), { depth: plateMm * s, bevelEnabled: false });
       for (const side of [-1, 1]) {
-        const p = new THREE.Mesh(new THREE.BoxGeometry(plateMm * s, geo.H * s, geo.W * s), plateMat);
-        p.position.set(side * ((geo.E / 2 + plateMm / 2) * s + explode * 0.35), (geo.H / 2) * s, 0);
-        const e = new THREE.LineSegments(new THREE.EdgesGeometry(p.geometry), new THREE.LineBasicMaterial({ color: 0x5b4027 }));
+        const p = new THREE.Mesh(pg, plateMat);
+        p.rotation.y = -Math.PI / 2;
+        const x = side < 0 ? -geo.Etot / 2 : geo.Etot / 2 + plateMm;
+        p.position.set(x * s + side * explode * 0.35, 0, -(geo.W / 2) * s);
+        const e = new THREE.LineSegments(new THREE.EdgesGeometry(pg, 30), new THREE.LineBasicMaterial({ color: 0x5b4027 }));
         p.add(e);
         cab.add(p);
       }
@@ -121,7 +135,7 @@
     const root = new THREE.Group();
     viewer.content.add(root);
     const one = cabinet();
-    const cabW = (geo.E + 2 * plateMm) * s;
+    const cabW = (geo.Etot + 2 * plateMm) * s;
     if (coupled <= 1) root.add(one);
     else {
       // mirrored stacks so the mouths meet: edge mouths stack top/bottom, corner mouths 2 × 2
@@ -181,7 +195,7 @@
     <label class="ex"><span>Plates apart</span><input type="range" min="0" max="1" step="0.01" bind:value={explode} aria-label="Explode plates" /></label>
     <button class="chip" class:on={showPlates} onclick={() => (showPlates = !showPlates)}>Side plates</button>
   </div>
-  <div class="hint">Each colour = one printed segment. Drag to orbit.</div>
+  <div class="hint">Light grey = printed core, red planes = where it is cut into printable pieces, wood = plates and dividers. Drag to orbit.</div>
 </div>
 
 <style>

@@ -109,6 +109,12 @@ function load(): HomeState {
     const raw = localStorage.getItem(KEY);
     if (!raw) return d;
     const s = JSON.parse(raw);
+    // hybrid designs saved before organic shapes / fat-nozzle defaults: start from the new presets
+    if (s.hybrid && s.hybrid.sub && s.hybrid.sub.rounding === undefined) {
+      delete s.hybrid.sub;
+      delete s.hybrid.living;
+      delete s.hybrid.printer;
+    }
     // older saves called this room the dining room
     if (s.shapeId === 'dining') s.shapeId = 'living';
     if (typeof s.roomName === 'string' && /dining/i.test(s.roomName)) s.roomName = 'Living room';
