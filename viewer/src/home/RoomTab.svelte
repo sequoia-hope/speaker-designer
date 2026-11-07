@@ -446,7 +446,8 @@
     home.mapMode === 'interference'
       ? interferenceField(home.room, speakers, mapZ, iFreq, home.sub.crossoverHz, {
           walls: home.system.walls,
-          maxCells: [70000, 40000, 16000][home.system.walls],
+          shape,
+          maxCells: [70000, 30000, 9000][home.system.walls],
         })
       : null
   );
@@ -612,7 +613,7 @@
       A centre-panned sound (a voice, a kick drum) at <b>{iFreq >= 1000 ? (iFreq / 1000).toFixed(1) + ' kHz' : iFreq.toFixed(0) + ' Hz'}</b>
       played by every speaker at once, with their real distances, delays and levels. {iView === 'level' ? 'Yellow = waves add up, dark blue = they cancel.' : 'Red/blue = pressure pushing/pulling; watch the waves cross.'}
       Deep dips (&gt; 10 dB) cover <b>{((field?.deepDipFraction ?? 0) * 100).toFixed(0)} %</b> of the listening area.
-      {home.system.walls === 0 ? 'Direct sound only — walls switched off.' : `Includes ${home.system.walls === 1 ? 'one bounce' : 'up to two bounces'} off the floor, ceiling and walls (treated as a flat box, ${Math.round((1 - wallR ** 2) * 100)} % absorbed per bounce from the RT60).`}
+      {home.system.walls === 0 ? 'Direct sound only — walls switched off.' : `Includes ${home.system.walls === 1 ? 'one bounce' : 'up to two bounces'} off the floor, ceiling and walls following the real outline${shape ? ' — the bay facets bounce sound at their own angles, the bay glass reflects more at high frequencies than low, and sound that hits the hall opening leaves the room' : ''} (walls absorb ${Math.round((1 - wallR ** 2) * 100)} % per bounce, from the RT60).`}
     {/if}
   </p>
   {#if home.mapMode === 'arrival' && arrival?.hasFills}

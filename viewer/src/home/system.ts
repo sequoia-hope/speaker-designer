@@ -8,6 +8,8 @@
 import type { PlacementConfig, RoomConfig, SubConfig, Vec3 } from './roomAcoustics';
 import { SPEED_OF_SOUND, listenerPosition, speakerPositions, subPositions, toeInDeg } from './roomAcoustics';
 import type { Role } from './designs';
+import type { AppShape } from './roomShape';
+import { buildRoom, glassAlpha, imageSources, pathGain, type ImageSource } from './reflections';
 
 export type LayoutId = 'stereo' | '2.1' | '2.2' | 'lcr' | '5.1' | '5.1.2' | '7.1' | 'party';
 
@@ -498,7 +500,7 @@ export function interferenceField(
   zEar: number,
   freqHz: number,
   subXoverHz: number,
-  opts: { ground?: boolean; maxCells?: number; x0?: number; y0?: number; walls?: 0 | 1 | 2 } = {}
+  opts: { ground?: boolean; maxCells?: number; x0?: number; y0?: number; walls?: 0 | 1 | 2; shape?: AppShape | null } = {}
 ): Field {
   const lambda = SPEED_OF_SOUND / freqHz;
   const maxCells = opts.maxCells ?? 70000;
@@ -544,15 +546,20 @@ export function interferenceField(
     });
   // ground reflection: rigid at bass, increasingly absorptive on turf/forest floor
   const groundR = opts.ground ? (freqHz < 200 ? 0.95 : Math.max(0.25, 0.95 - 0.35 * Math.log2(freqHz / 200))) : 0;
-  // indoor walls: mirror-image sources in the rectangular box (floor, ceiling and
-  // four walls), each bounce scaled by the average reflection factor from the
-  // room's RT60 (Sabine: α = 0.161 V / (S·RT60), R = √(1 − α))
-  const imgs = imageSet(room, opts.walls ?? 0);
+  // indoor walls: image sources off the room's real outline (bay facets included),
+  // floor and ceiling. Walls reflect with the average factor from the RT60
+  // (Sabine: α = 0.161 V / (S·RT60), R = √(1 − α)); window glass with its own
+  // frequency-dependent absorption; openings don't reflect at all.
+  const order = opts.walls ?? 0;
+  const room3 = order ? buildRoom(room, opts.shape ?? null) : null;
   const Rw = (() => {
     const { widthM: W, depthM: D, heightM: H } = room;
     const alpha = Math.min(0.95, (0.161 * W * D * H) / (2 * (W * D + W * H + D * H) * Math.max(room.rt60S, 0.1)));
     return Math.sqrt(1 - alpha);
   })();
+  const Rg = Math.sqrt(1 - glassAlpha(freqHz));
+  const imgsOf = new Map<SystemSpeaker, ImageSource[]>();
+  if (room3) for (const { s } of srcs) imgsOf.set(s, imageSources(s.pos, s.aim, room3, order));
   const re = new Float32Array(nx * ny);
   const im = new Float32Array(nx * ny);
   const db = new Float32Array(nx * ny);
@@ -563,18 +570,18 @@ export function interferenceField(
       let pr = 0;
       let pi = 0;
       for (const { s, xo, g, omni, tau } of srcs) {
-        if (imgs.length) {
-          for (const m of imgs) {
-            const sx = m.x(s.pos.x);
-            const sy = m.y(s.pos.y);
-            const sz = m.z(s.pos.z);
-            const vx = x - sx;
-            const vy = y - sy;
-            const vz = zEar - sz;
+        if (room3) {
+          const rcv = { x, y, z: zEar };
+          for (const m of imgsOf.get(s)!) {
+            const pg = pathGain(m, s.pos, rcv, room3, Rw, Rg);
+            if (pg === 0) continue;
+            const vx = x - m.pos.x;
+            const vy = y - m.pos.y;
+            const vz = zEar - m.pos.z;
             const r = Math.max(Math.hypot(vx, vy, vz), 0.15);
-            const cos = (vx * s.aim.x * m.fx + vy * s.aim.y * m.fy + vz * s.aim.z * m.fz) / r;
+            const cos = (vx * m.aim.x + vy * m.aim.y + vz * m.aim.z) / r;
             const off = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
-            const a = (Rw ** m.n * g * (omni ? 1 : 10 ** ((directivityDb(off) * dirScale) / 20))) / r;
+            const a = (pg * g * (omni ? 1 : 10 ** ((directivityDb(off) * dirScale) / 20))) / r;
             const ph = -(k * r + w * tau);
             const cr = Math.cos(ph);
             const ci = Math.sin(ph);
@@ -621,28 +628,6 @@ export function interferenceField(
   const median = vals[Math.floor(vals.length / 2)] ?? 0;
   const deep = vals.filter((v) => v < median - 10).length / Math.max(vals.length, 1);
   return { nx, ny, grid, re, im, db, freqHz, deepDipFraction: deep, medianDb: median };
-}
-
-/** Mirror images of a source in a box, up to `order` bounces (0 = direct only). */
-function imageSet(room: RoomConfig, order: number) {
-  if (!order) return [];
-  type Ax = { f: (v: number) => number; flip: 1 | -1; n: number };
-  const axis = (L: number): Ax[] => [
-    { f: (v) => v, flip: 1, n: 0 },
-    { f: (v) => -v, flip: -1, n: 1 },
-    { f: (v) => 2 * L - v, flip: -1, n: 1 },
-    { f: (v) => 2 * L + v, flip: 1, n: 2 },
-    { f: (v) => v - 2 * L, flip: 1, n: 2 },
-  ];
-  const out: { x: (v: number) => number; y: (v: number) => number; z: (v: number) => number; fx: number; fy: number; fz: number; n: number }[] = [];
-  for (const ax of axis(room.widthM))
-    for (const ay of axis(room.depthM))
-      for (const az of axis(room.heightM)) {
-        const n = ax.n + ay.n + az.n;
-        if (n > order) continue;
-        out.push({ x: ax.f, y: ay.f, z: az.f, fx: ax.flip, fy: ay.flip, fz: az.flip, n });
-      }
-  return out;
 }
 
 /** Stereo-image map for any left/right pair (|t_L − t_R| in ms). */
