@@ -1,7 +1,7 @@
 import type { PlacementConfig, RoomConfig, SubConfig } from './roomAcoustics';
 import { FT } from './roomAcoustics';
 import { DESIGNS, type DesignSettings, type Role } from './designs';
-import type { LayoutId } from './system';
+import type { DspOverride, LayoutId } from './system';
 import type { Compass } from './roomShape';
 import { LIVING_ROOM, toAppFrame } from './roomShape';
 import { DEFAULT_OUTDOOR, type OutdoorConfig } from './outdoor';
@@ -21,6 +21,12 @@ export interface HomeState {
     /** party fills: null = automatic delay */
     fillDelayMs: number | null;
     fillGainDb: number;
+    /** delay/level every speaker to the main seat (AV-receiver style) */
+    autoAlign: boolean;
+    /** per-speaker DSP overrides, by speaker id */
+    dsp: Record<string, DspOverride>;
+    /** wall reflections in the interference map: 0 = direct only */
+    walls: 0 | 1 | 2;
   };
   /** a known room outline (windows, bay…) or null for a plain rectangle */
   shapeId: string | null;
@@ -84,6 +90,9 @@ export function defaultState(): HomeState {
       roles: { mains: 'monitor', center: 'center', surround: 'compact', height: 'fullrange', fill: 'compact', sub: 'sub12' },
       fillDelayMs: null,
       fillGainDb: -6,
+      autoAlign: true,
+      dsp: {},
+      walls: 1,
     },
     mapMode: 'bass',
     mapEar: 'seated',
@@ -125,7 +134,7 @@ function load(): HomeState {
       placement: { ...d.placement, ...s.placement },
       sub: { ...d.sub, ...s.sub },
       designs: { ...d.designs, ...(s.designs ?? {}) },
-      system: { ...d.system, ...(s.system ?? {}), roles: { ...d.system.roles, ...(s.system?.roles ?? {}) } },
+      system: { ...d.system, ...(s.system ?? {}), roles: { ...d.system.roles, ...(s.system?.roles ?? {}) }, dsp: { ...(s.system?.dsp ?? {}) } },
       furniture: { ...d.furniture, ...(s.furniture ?? {}) },
       hybrid: {
         ...d.hybrid,

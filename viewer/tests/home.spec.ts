@@ -59,7 +59,7 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   const nav = page.getByRole('navigation', { name: 'Home Hi-Fi sections' });
   await nav.getByRole('button', { name: /Room/ }).click();
   await page.locator('.lcard', { hasText: '5.1.2' }).click();
-  await expect(page.getByRole('cell', { name: /Top left/ })).toBeVisible();
+  await expect(page.getByRole('cell', { name: /Top left/ }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Loudness coverage' }).click();
   await expect(page.getByText(/Spread across the room/)).toBeVisible();
   await page.locator('.lcard', { hasText: 'Guests / party' }).click();
@@ -77,6 +77,20 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   await expect(page.getByText(/Deep dips/)).toBeVisible();
   await page.getByRole('button', { name: /Animate waves/ }).click();
   await page.getByRole('button', { name: /Pause/ }).click();
+  // wall reflections in the interference map
+  await page.getByRole('button', { name: '2nd bounce' }).click();
+  await expect(page.getByText(/up to two bounces off the floor/)).toBeVisible();
+  await page.getByRole('button', { name: 'Off', exact: true }).click();
+  await expect(page.getByText(/walls switched off/)).toBeVisible();
+  // per-speaker DSP: flipping the sub's polarity breaks the crossover sum, the finder fixes it
+  await page.locator('.lcard', { hasText: 'Stereo + subwoofer' }).click();
+  await expect(page.getByRole('heading', { name: /Delays, levels/ })).toBeVisible();
+  await page.getByRole('button', { name: 'S1 polarity' }).click();
+  await expect(page.getByText(/dB short of a perfect sum/)).toBeVisible();
+  await page.getByRole('button', { name: /Find best sub delay/ }).click();
+  await expect(page.getByText(/Subs: \d+\.\d ms/)).toBeVisible();
+  await page.getByRole('button', { name: 'Reset S1' }).click();
+  await expect(page.getByText('a perfect sum', { exact: true })).toBeVisible();
 
   // Speakers gallery: open the tower and the sub
   await nav.getByRole('button', { name: /Speakers/ }).click();

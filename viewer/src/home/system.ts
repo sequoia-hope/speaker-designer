@@ -23,8 +23,10 @@ export interface SystemSpeaker {
   delayMs?: number;
   /** level relative to the mains (dB) */
   gainDb?: number;
-  /** the delay the planner would pick (fills only) */
+  /** the delay the planner would pick */
   autoDelayMs?: number;
+  /** the level trim the planner would pick */
+  autoGainDb?: number;
   /** polarity inverted (cardioid sub arrays) */
   invert?: boolean;
   /** extra 2nd-order high-pass from the horn mouth size (subs), Hz */
@@ -232,6 +234,112 @@ export function layoutSpeakers(
 }
 
 /** Off-axis attenuation (dB) of a typical 2-way at 1–4 kHz: about −6 dB at 45°, −20 dB beyond 90°. */
+// ---------------------------------------------------------------------------
+// Seat alignment ("speaker distance & level" in an AV receiver): delay every
+// speaker so its sound reaches the main seat at the same moment as the
+// farthest one, and trim levels so each is equally loud there. Fills keep
+// their Haas delay, shifted by whatever delay the mains got. Per-speaker
+// overrides win over the automatic values.
+// ---------------------------------------------------------------------------
+
+export interface DspOverride {
+  delayMs?: number;
+  gainDb?: number;
+  invert?: boolean;
+}
+
+export function alignToSeat(
+  speakers: SystemSpeaker[],
+  seat: Vec3,
+  opts: { auto: boolean; dsp: Record<string, DspOverride>; fillDelayMs: number | null }
+): SystemSpeaker[] {
+  const dist = (s: SystemSpeaker) => Math.hypot(s.pos.x - seat.x, s.pos.y - seat.y, s.pos.z - seat.z);
+  const direct = speakers.filter((s) => s.role !== 'fill' && s.role !== 'monitor');
+  const dMax = Math.max(0, ...direct.map(dist));
+  const mains = speakers.filter((s) => s.role === 'mains');
+  const dMain = mains.length ? mains.reduce((a, s) => a + dist(s), 0) / mains.length : dMax;
+  const mainsAlign = opts.auto ? ((dMax - dMain) / SPEED_OF_SOUND) * 1000 : 0;
+  return speakers.map((s) => {
+    const o = opts.dsp[s.id] ?? {};
+    if (s.role === 'fill') {
+      const auto = (s.autoDelayMs ?? 0) + mainsAlign;
+      return { ...s, autoDelayMs: auto, delayMs: opts.fillDelayMs ?? auto, invert: o.invert ?? s.invert };
+    }
+    const d = dist(s);
+    const autoDelay = opts.auto ? ((dMax - d) / SPEED_OF_SOUND) * 1000 : 0;
+    const roleDefault = s.role === 'surround' || s.role === 'height' ? -3 : 0;
+    const autoGain = opts.auto && s.role !== 'sub' ? Math.max(-10, Math.min(6, 20 * Math.log10(d / Math.max(dMain, 0.3)))) : roleDefault;
+    return {
+      ...s,
+      autoDelayMs: autoDelay,
+      autoGainDb: autoGain,
+      delayMs: o.delayMs ?? autoDelay,
+      gainDb: o.gainDb ?? autoGain,
+      invert: o.invert ?? s.invert,
+    };
+  });
+}
+
+/**
+ * How well the subs and the mains add up at a point around the crossover
+ * (direct sound): 0 dB = perfectly in step, −6 dB or worse = fighting.
+ * Returns the loss vs a perfect sum, averaged over half an octave each side.
+ */
+export function crossoverSumDb(speakers: SystemSpeaker[], at: Vec3, xoverHz: number): number {
+  const mains = speakers.filter((s) => s.role === 'mains');
+  const subs = speakers.filter((s) => s.role === 'sub');
+  if (!mains.length || !subs.length) return NaN;
+  let loss = 0;
+  const fs = [0.7, 0.85, 1, 1.2, 1.4].map((m) => m * xoverHz);
+  for (const f of fs) {
+    const one = (list: SystemSpeaker[], type: 'lp' | 'hp') => {
+      let re = 0;
+      let im = 0;
+      let mag = 0;
+      const x = lr4c(f / xoverHz, type);
+      for (const s of list) {
+        const r = Math.max(0.3, Math.hypot(s.pos.x - at.x, s.pos.y - at.y, s.pos.z - at.z));
+        const g = (s.invert ? -1 : 1) * 10 ** ((s.gainDb ?? 0) / 20) / r;
+        const ph = -(2 * Math.PI * f) * (r / SPEED_OF_SOUND + (s.delayMs ?? 0) / 1000);
+        re += g * (x.re * Math.cos(ph) - x.im * Math.sin(ph));
+        im += g * (x.re * Math.sin(ph) + x.im * Math.cos(ph));
+        mag += Math.abs(g) * Math.hypot(x.re, x.im);
+      }
+      return { re: re / list.length, im: im / list.length, mag: mag / list.length };
+    };
+    const a = one(mains, 'hp');
+    const b = one(subs, 'lp');
+    loss += 20 * Math.log10(Math.hypot(a.re + b.re, a.im + b.im) / (a.mag + b.mag));
+  }
+  return loss / fs.length;
+}
+
+/** Linkwitz–Riley 4th order at x = f/fc. */
+function lr4c(x: number, type: 'lp' | 'hp') {
+  const q = Math.SQRT1_2;
+  const dre = 1 - x * x;
+  const dim = x / q;
+  const nre = type === 'lp' ? 1 : -x * x;
+  const d2 = dre * dre + dim * dim;
+  const bre = (nre * dre) / d2;
+  const bim = (-nre * dim) / d2;
+  return { re: bre * bre - bim * bim, im: 2 * bre * bim };
+}
+
+/** Sub delay (and polarity) that makes subs and mains add up best at the seat. */
+export function bestSubDelay(speakers: SystemSpeaker[], at: Vec3, xoverHz: number): { delayMs: number; invert: boolean; sumDb: number } {
+  let best = { delayMs: 0, invert: false, sumDb: -Infinity };
+  // the mains are the reference; slide the subs (sub delays relative to their current values)
+  for (const invert of [false, true])
+    for (let dt = 0; dt <= 20; dt += 0.1) {
+      const trial = speakers.map((s) => (s.role === 'sub' ? { ...s, delayMs: dt, invert } : s));
+      const v = crossoverSumDb(trial, at, xoverHz);
+      // prefer the normal polarity and the shortest delay when nearly equal
+      if (v > best.sumDb + 0.05) best = { delayMs: dt, invert, sumDb: v };
+    }
+  return best;
+}
+
 export function directivityDb(offAxisDeg: number): number {
   const a = Math.min(Math.abs(offAxisDeg), 180);
   return Math.max(-24, -6 * (a / 45) ** 2);
@@ -367,8 +475,8 @@ export function arrivalColor(v: number) {
 
 // ---------------------------------------------------------------------------
 // Interference: coherent sum of every speaker playing the same (centre-panned)
-// sound, with each one's delay, level, directivity and crossover. Direct sound
-// only — no wall reflections (use the bass map for the room's own effect).
+// sound, with each one's delay, level, directivity and crossover. Optionally
+// adds the ground bounce (outdoors) or 1st/2nd-order wall reflections (indoors).
 // ---------------------------------------------------------------------------
 
 export interface Field {
@@ -390,7 +498,7 @@ export function interferenceField(
   zEar: number,
   freqHz: number,
   subXoverHz: number,
-  opts: { ground?: boolean; maxCells?: number; x0?: number; y0?: number } = {}
+  opts: { ground?: boolean; maxCells?: number; x0?: number; y0?: number; walls?: 0 | 1 | 2 } = {}
 ): Field {
   const lambda = SPEED_OF_SOUND / freqHz;
   const maxCells = opts.maxCells ?? 70000;
@@ -436,6 +544,15 @@ export function interferenceField(
     });
   // ground reflection: rigid at bass, increasingly absorptive on turf/forest floor
   const groundR = opts.ground ? (freqHz < 200 ? 0.95 : Math.max(0.25, 0.95 - 0.35 * Math.log2(freqHz / 200))) : 0;
+  // indoor walls: mirror-image sources in the rectangular box (floor, ceiling and
+  // four walls), each bounce scaled by the average reflection factor from the
+  // room's RT60 (Sabine: α = 0.161 V / (S·RT60), R = √(1 − α))
+  const imgs = imageSet(room, opts.walls ?? 0);
+  const Rw = (() => {
+    const { widthM: W, depthM: D, heightM: H } = room;
+    const alpha = Math.min(0.95, (0.161 * W * D * H) / (2 * (W * D + W * H + D * H) * Math.max(room.rt60S, 0.1)));
+    return Math.sqrt(1 - alpha);
+  })();
   const re = new Float32Array(nx * ny);
   const im = new Float32Array(nx * ny);
   const db = new Float32Array(nx * ny);
@@ -446,6 +563,26 @@ export function interferenceField(
       let pr = 0;
       let pi = 0;
       for (const { s, xo, g, omni, tau } of srcs) {
+        if (imgs.length) {
+          for (const m of imgs) {
+            const sx = m.x(s.pos.x);
+            const sy = m.y(s.pos.y);
+            const sz = m.z(s.pos.z);
+            const vx = x - sx;
+            const vy = y - sy;
+            const vz = zEar - sz;
+            const r = Math.max(Math.hypot(vx, vy, vz), 0.15);
+            const cos = (vx * s.aim.x * m.fx + vy * s.aim.y * m.fy + vz * s.aim.z * m.fz) / r;
+            const off = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+            const a = (Rw ** m.n * g * (omni ? 1 : 10 ** ((directivityDb(off) * dirScale) / 20))) / r;
+            const ph = -(k * r + w * tau);
+            const cr = Math.cos(ph);
+            const ci = Math.sin(ph);
+            pr += a * (xo.re * cr - xo.im * ci);
+            pi += a * (xo.re * ci + xo.im * cr);
+          }
+          continue;
+        }
         for (let img = 0; img < (groundR > 0 ? 2 : 1); img++) {
           const sz = img ? -s.pos.z : s.pos.z;
           const vx = x - s.pos.x;
@@ -484,6 +621,28 @@ export function interferenceField(
   const median = vals[Math.floor(vals.length / 2)] ?? 0;
   const deep = vals.filter((v) => v < median - 10).length / Math.max(vals.length, 1);
   return { nx, ny, grid, re, im, db, freqHz, deepDipFraction: deep, medianDb: median };
+}
+
+/** Mirror images of a source in a box, up to `order` bounces (0 = direct only). */
+function imageSet(room: RoomConfig, order: number) {
+  if (!order) return [];
+  type Ax = { f: (v: number) => number; flip: 1 | -1; n: number };
+  const axis = (L: number): Ax[] => [
+    { f: (v) => v, flip: 1, n: 0 },
+    { f: (v) => -v, flip: -1, n: 1 },
+    { f: (v) => 2 * L - v, flip: -1, n: 1 },
+    { f: (v) => 2 * L + v, flip: 1, n: 2 },
+    { f: (v) => v - 2 * L, flip: 1, n: 2 },
+  ];
+  const out: { x: (v: number) => number; y: (v: number) => number; z: (v: number) => number; fx: number; fy: number; fz: number; n: number }[] = [];
+  for (const ax of axis(room.widthM))
+    for (const ay of axis(room.depthM))
+      for (const az of axis(room.heightM)) {
+        const n = ax.n + ay.n + az.n;
+        if (n > order) continue;
+        out.push({ x: ax.f, y: ay.f, z: az.f, fx: ax.flip, fy: ay.flip, fz: az.flip, n });
+      }
+  return out;
 }
 
 /** Stereo-image map for any left/right pair (|t_L − t_R| in ms). */

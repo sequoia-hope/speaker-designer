@@ -11,6 +11,9 @@
     imageMap,
     interferenceField,
     layoutSpeakers,
+    alignToSeat,
+    bestSubDelay,
+    crossoverSumDb,
     type LayoutId,
     type SystemSpeaker,
   } from './system';
@@ -78,14 +81,18 @@
     home.sub = { ...l.subs };
   }
   const speakers = $derived<SystemSpeaker[]>(
-    layoutSpeakers(home.system.layout, home.room, home.placement, home.sub, {
-      delayMs: home.system.fillDelayMs,
-      gainDb: home.system.fillGainDb,
-    }).map((s) => {
-      const moved = s.mount === 'wall' || s.mount === 'floor' ? { ...s, pos: { ...s.pos, ...avoidOpenings(s.pos, shape) } } : s;
-      const tallMains = home.designs[home.system.roles.mains]?.arrangement === 'tower' || (home.hybrid.useLiving && home.hybrid.living.heightMm > 700);
-      return s.role === 'mains' && tallMains ? { ...moved, mount: 'floor' as const } : moved;
-    })
+    alignToSeat(
+      layoutSpeakers(home.system.layout, home.room, home.placement, home.sub, {
+        delayMs: home.system.fillDelayMs,
+        gainDb: home.system.fillGainDb,
+      }).map((s) => {
+        const moved = s.mount === 'wall' || s.mount === 'floor' ? { ...s, pos: { ...s.pos, ...avoidOpenings(s.pos, shape) } } : s;
+        const tallMains = home.designs[home.system.roles.mains]?.arrangement === 'tower' || (home.hybrid.useLiving && home.hybrid.living.heightMm > 700);
+        return s.role === 'mains' && tallMains ? { ...moved, mount: 'floor' as const } : moved;
+      }),
+      listenerPosition(home.room, home.placement),
+      { auto: home.system.autoAlign, dsp: home.system.dsp, fillDelayMs: home.system.fillDelayMs }
+    )
   );
   const ROLES: Role[] = ['mains', 'center', 'surround', 'height', 'fill', 'sub'];
   const ROLE_LABEL: Record<Role, string> = { mains: 'Mains', center: 'Centre', surround: 'Surround', height: 'Ceiling', fill: 'Party fill', sub: 'Sub' };
@@ -146,20 +153,32 @@
     const subs = subPositions(r, home.sub).map((p) => ({ ...p, ...avoidOpenings(p, shape) }));
     const fc = home.sub.crossoverHz;
     const al = alignment;
-    const mainDrive = (f: number): Complex => {
-      let h = boxResponse(al, f);
-      if (subs.length) h = cmul(h, lr4(f, fc, 'hp'));
-      return h;
+    // each speaker's DSP: delay e^{−jωτ}, level and polarity
+    const dsp = (id: string) => {
+      const sp = speakers.find((x) => x.id === id);
+      const tau = (sp?.delayMs ?? 0) / 1000;
+      const g = (sp?.invert ? -1 : 1) * 10 ** ((sp?.gainDb ?? 0) / 20);
+      return (f: number, h: Complex): Complex => cmul(h, { re: g * Math.cos(-2 * Math.PI * f * tau), im: g * Math.sin(-2 * Math.PI * f * tau) });
+    };
+    const mainDrive = (id: string) => {
+      const d = dsp(id);
+      return (f: number): Complex => {
+        let h = boxResponse(al, f);
+        if (subs.length) h = cmul(h, lr4(f, fc, 'hp'));
+        return d(f, h);
+      };
     };
     const srcs: ModalSource[] = [
-      { pos: L, drive: mainDrive },
-      { pos: R, drive: mainDrive },
+      { pos: L, drive: mainDrive('L') },
+      { pos: R, drive: mainDrive('R') },
     ];
     if (subs.length) {
       const subAl: BoxAlignment = { kind: 'sealed', fcHz: 24, qtc: 0.7 };
       const g = 2 / subs.length; // same total bass output as the two mains
-      for (const s of subs)
-        srcs.push({ pos: s, drive: (f) => cscale(cmul(boxResponse(subAl, f), lr4(f, fc, 'lp')), g) });
+      subs.forEach((s, i) => {
+        const d = dsp(`S${i + 1}`);
+        srcs.push({ pos: s, drive: (f) => d(f, cscale(cmul(boxResponse(subAl, f), lr4(f, fc, 'lp')), g)) });
+      });
     }
     return srcs;
   }
@@ -394,11 +413,41 @@
   const fillDelayNow = $derived(fills[0]?.delayMs ?? 0);
   const arrival = $derived(speakers.some((x) => x.role === 'fill') ? arrivalMap(home.room, speakers, mapZ, 0.1) : null);
   let iFreq = $state(500);
+  const seatPos = $derived(listenerPosition(home.room, home.placement));
+  const wallR = $derived.by(() => {
+    const { widthM: W, depthM: D, heightM: H, rt60S } = home.room;
+    return Math.sqrt(1 - Math.min(0.95, (0.161 * W * D * H) / (2 * (W * D + W * H + D * H) * Math.max(rt60S, 0.1))));
+  });
+  const xSum = $derived(crossoverSumDb(speakers, seatPos, home.sub.crossoverHz));
+  const hasDsp = (id: string) => Object.keys(home.system.dsp[id] ?? {}).length > 0;
+  function setDsp(id: string, patch: { delayMs?: number; gainDb?: number; invert?: boolean }) {
+    home.system.dsp = { ...home.system.dsp, [id]: { ...(home.system.dsp[id] ?? {}), ...patch } };
+  }
+  let subMsg = $state('');
+  function resetDsp(id: string) {
+    const { [id]: _drop, ...rest } = home.system.dsp;
+    void _drop;
+    home.system.dsp = rest;
+    subMsg = '';
+  }
+  const f1 = (v: number | undefined) => (Math.abs(v ?? 0) < 0.05 ? 0 : (v as number)).toFixed(1);
+  function numIn(e: Event) {
+    const v = parseFloat((e.target as HTMLInputElement).value);
+    return Number.isFinite(v) ? v : 0;
+  }
+  function alignSub() {
+    const b = bestSubDelay(speakers, seatPos, home.sub.crossoverHz);
+    for (const sp of speakers.filter((x) => x.role === 'sub')) setDsp(sp.id, { delayMs: Math.round(b.delayMs * 10) / 10, invert: b.invert });
+    subMsg = `Subs: ${b.delayMs.toFixed(1)} ms${b.invert ? ', polarity flipped' : ''} — within ${Math.abs(b.sumDb).toFixed(1)} dB of a perfect sum at the seat.`;
+  }
   let iView = $state<'level' | 'wave'>('level');
   let animating = $state(false);
   const field = $derived(
     home.mapMode === 'interference'
-      ? interferenceField(home.room, speakers, mapZ, iFreq, home.sub.crossoverHz)
+      ? interferenceField(home.room, speakers, mapZ, iFreq, home.sub.crossoverHz, {
+          walls: home.system.walls,
+          maxCells: [70000, 40000, 16000][home.system.walls],
+        })
       : null
   );
   const mapCanvas = $derived.by(() => {
@@ -556,12 +605,14 @@
         Which sound reaches each spot first, and whether the fills blend in (precedence / Haas effect). Sound still comes
         from the front over <b>{((arrival.goodFraction) * 100).toFixed(0)} %</b> of the room.
       {:else}
-        This layout has no delayed fill speakers. Try <button class="linklike" onclick={() => selectLayout('party')}>Guests / party</button>.
+        This layout has no delayed fill speakers, so nothing can "pull" the sound away from the front. Press play to
+        watch the wavefronts — with seat alignment on, every speaker's sound reaches the sweet spot at the same moment. For fills, try <button class="linklike" onclick={() => selectLayout('party')}>Guests / party</button>.
       {/if}
     {:else}
       A centre-panned sound (a voice, a kick drum) at <b>{iFreq >= 1000 ? (iFreq / 1000).toFixed(1) + ' kHz' : iFreq.toFixed(0) + ' Hz'}</b>
       played by every speaker at once, with their real distances, delays and levels. {iView === 'level' ? 'Yellow = waves add up, dark blue = they cancel.' : 'Red/blue = pressure pushing/pulling; watch the waves cross.'}
-      Deep dips (&gt; 10 dB) cover <b>{((field?.deepDipFraction ?? 0) * 100).toFixed(0)} %</b> of the listening area. Direct sound only — walls not included.
+      Deep dips (&gt; 10 dB) cover <b>{((field?.deepDipFraction ?? 0) * 100).toFixed(0)} %</b> of the listening area.
+      {home.system.walls === 0 ? 'Direct sound only — walls switched off.' : `Includes ${home.system.walls === 1 ? 'one bounce' : 'up to two bounces'} off the floor, ceiling and walls (treated as a flat box, ${Math.round((1 - wallR ** 2) * 100)} % absorbed per bounce from the RT60).`}
     {/if}
   </p>
   {#if home.mapMode === 'arrival' && arrival?.hasFills}
@@ -600,6 +651,21 @@
           <button class:on={iView === 'wave' || animating} onclick={() => { iView = 'wave'; }}>Wave</button>
         </div>
         <button class="btn" onclick={() => { animating = !animating; if (animating) iView = 'wave'; }}>{animating ? '❚❚ Pause' : '▶ Animate waves'}</button>
+      </div>
+      <div class="opt-row">
+        <span class="small muted">Walls</span>
+        <div class="seg" role="group" aria-label="Wall reflections">
+          <button class:on={home.system.walls === 0} onclick={() => (home.system.walls = 0)}>Off</button>
+          <button class:on={home.system.walls === 1} onclick={() => (home.system.walls = 1)}>1st bounce</button>
+          <button class:on={home.system.walls === 2} onclick={() => (home.system.walls = 2)}>2nd bounce</button>
+        </div>
+      </div>
+    </div>
+  {:else if home.mapMode === 'arrival'}
+    <div class="ctl-panel">
+      <div class="opt-row">
+        <button class="btn" onclick={playWaves} disabled={playingWaves}>▶ Play arrivals (slow-mo)</button>
+        <span class="small muted">Each ring leaves its speaker after that speaker's DSP delay — with seat alignment on they all reach the sweet spot together.</span>
       </div>
     </div>
   {/if}
@@ -782,6 +848,64 @@
     </tbody>
   </table>
   <p class="small muted">Bass: lower is more even. Loudness: average level relative to the loudest spot in the room (and how much it varies inside the zone).</p>
+</section>
+
+<section class="card">
+  <h2>Delays, levels &amp; polarity</h2>
+  <p class="sub">What each output of your DSP (AV receiver, miniDSP or plate amp) should be set to. The maps, the seat response and the wavefronts all use these values.</p>
+  <label class="toggle"><input type="checkbox" bind:checked={home.system.autoAlign} /> Auto-align every speaker to the sweet spot</label>
+  <p class="small muted">
+    {#if home.system.autoAlign}
+      Like an AV receiver's "speaker distance &amp; level": nearer speakers wait for the farthest one, and each is trimmed
+      to be equally loud at the seat (inverse-square). Party fills keep their echo-safe delay on top.
+    {:else}
+      No alignment: every speaker plays immediately at full level, so nearer speakers arrive first and louder.
+    {/if}
+  </p>
+  <table class="tbl dsp">
+    <thead><tr><th>Out</th><th>To seat</th><th>Delay ms</th><th>Level dB</th><th>Pol.</th></tr></thead>
+    <tbody>
+      {#each speakers as sp}
+        {@const d = Math.hypot(sp.pos.x - seatPos.x, sp.pos.y - seatPos.y, sp.pos.z - seatPos.z)}
+        {@const isFill = sp.role === 'fill'}
+        <tr>
+          <td><b>{sp.id}</b><span class="mm">{sp.label}</span></td>
+          <td>{fmtFtIn(d)}<span class="mm">{((d / 343.2) * 1000).toFixed(1)} ms</span></td>
+          <td>
+            <input class="num" type="number" step="0.1" min="0" max="60" aria-label={`${sp.id} delay`}
+              value={f1(sp.delayMs)}
+              onchange={(e) => (isFill ? (home.system.fillDelayMs = numIn(e)) : setDsp(sp.id, { delayMs: numIn(e) }))} />
+            <span class="mm">auto {f1(sp.autoDelayMs)}</span>
+          </td>
+          <td>
+            <input class="num" type="number" step="0.5" min="-20" max="10" aria-label={`${sp.id} level`}
+              value={f1(sp.gainDb)}
+              onchange={(e) => (isFill ? (home.system.fillGainDb = numIn(e)) : setDsp(sp.id, { gainDb: numIn(e) }))} />
+            {#if !isFill}<span class="mm">auto {f1(sp.autoGainDb)}</span>{/if}
+          </td>
+          <td>
+            <button class="pol" class:inv={sp.invert} aria-label={`${sp.id} polarity`} onclick={() => setDsp(sp.id, { invert: !sp.invert })}>{sp.invert ? '−' : '+'}</button>
+            {#if hasDsp(sp.id) || (isFill && home.system.fillDelayMs !== null)}
+              <button class="pol" aria-label={`Reset ${sp.id}`} title="Back to auto" onclick={() => { resetDsp(sp.id); if (isFill) home.system.fillDelayMs = null; }}>↺</button>
+            {/if}
+          </td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+  {#if Number.isFinite(xSum)}
+    <h3>Sub ↔ mains at the crossover</h3>
+    <p class="small">
+      Around {home.sub.crossoverHz} Hz at the sweet spot the subs and mains add up to
+      <b class:good={xSum > -1.5} class:bad={xSum < -4}>{xSum > -0.05 ? 'a perfect sum' : `${xSum.toFixed(1)} dB short of a perfect sum`}</b>
+      {xSum > -1.5 ? '— they are in step.' : xSum < -4 ? '— they are fighting: change the sub delay or flip its polarity.' : '— close; a small sub delay change would help.'}
+      (Direct sound only; the room adds its own peaks and dips — check with a mic.)
+    </p>
+    <div class="opt-row">
+      <button class="btn" onclick={alignSub}>⟲ Find best sub delay</button>
+      {#if subMsg}<span class="small muted">{subMsg}</span>{/if}
+    </div>
+  {/if}
 </section>
 
 {#if fills.length || speakers.some((x) => x.role === 'sub')}
@@ -1000,6 +1124,48 @@
 </div>
 
 <style>
+  .toggle {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin: 8px 0;
+    font-size: 14px;
+  }
+  .toggle input {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--accent);
+  }
+  .dsp .num {
+    width: 62px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    color: var(--text-0, inherit);
+    font: inherit;
+    font-size: 13px;
+  }
+  .pol {
+    min-width: 30px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    color: var(--text-1);
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .pol.inv {
+    border-color: #f87171;
+    color: #f87171;
+  }
+  .good {
+    color: var(--emerald);
+  }
+  .bad {
+    color: #f87171;
+  }
   :global(.pl-furn) {
     fill: #e2e8f0;
     font-size: 17px;
