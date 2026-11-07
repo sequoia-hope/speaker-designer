@@ -77,6 +77,26 @@ export function zRad(areaM2: number, f: number): Cx {
 export type ProfileType = 'folded-horn' | 'tl' | 'slot-port' | 'waveguide';
 export type MouthPlace = 'edge' | 'corner';
 
+export type PlateMaterial = 'bb18' | 'mdf19' | 'bb12' | 'sandwich';
+
+export type SandwichCore = 'ribs' | 'balsa' | 'paulownia' | 'poplar';
+
+export interface SandwichSpec {
+  skin: 'carbon' | 'glass';
+  /** what holds the skins apart: printed ribs or a light wood */
+  core: SandwichCore;
+  /** layers of 200 g/m² woven cloth on EACH face */
+  plies: number;
+  /** core thickness (mm) */
+  coreMm: number;
+  /** rib spacing (mm) — square grid */
+  ribPitchMm: number;
+  /** rib thickness in extrusion lines */
+  ribLines: number;
+}
+
+export const DEFAULT_SANDWICH: SandwichSpec = { skin: 'carbon', core: 'ribs', plies: 3, coreMm: 20, ribPitchMm: 40, ribLines: 2 };
+
 export interface HybridParams {
   type: ProfileType;
   driverId: string;
@@ -87,7 +107,9 @@ export interface HybridParams {
   /** width between the two outer plates (mm), including any plywood dividers */
   extrusionMm: number;
   plateMm: number;
-  plateMaterial: 'bb18' | 'mdf19' | 'bb12';
+  plateMaterial: PlateMaterial;
+  /** skins + printed rib core, used when plateMaterial is 'sandwich' */
+  sandwich: SandwichSpec;
   /** plywood dividers that split the printed core into thinner cores (stiffer walls, shorter prints) */
   dividers: number;
   /** printed wall thickness (mm) — a whole number of extrusion lines */
@@ -120,6 +142,7 @@ export const HYBRID_PRESETS: Record<'sub' | 'living' | 'waveguide', HybridParams
     heightMm: 900,
     extrusionMm: 580,
     plateMm: 18,
+    sandwich: { ...DEFAULT_SANDWICH },
     plateMaterial: 'bb18',
     dividers: 1,
     wallMm: 18,
@@ -141,6 +164,7 @@ export const HYBRID_PRESETS: Record<'sub' | 'living' | 'waveguide', HybridParams
     heightMm: 920,
     extrusionMm: 200,
     plateMm: 18,
+    sandwich: { ...DEFAULT_SANDWICH },
     plateMaterial: 'bb18',
     dividers: 0,
     wallMm: 9,
@@ -162,6 +186,7 @@ export const HYBRID_PRESETS: Record<'sub' | 'living' | 'waveguide', HybridParams
     heightMm: 310,
     extrusionMm: 120,
     plateMm: 12,
+    sandwich: { ...DEFAULT_SANDWICH },
     plateMaterial: 'bb12',
     dividers: 0,
     wallMm: 7.5,
@@ -1122,12 +1147,163 @@ const PLATES = {
   bb12: { name: '12 mm Baltic birch', E: 11.5e9, rho: 680, nu: 0.3 },
   mdf19: { name: '19 mm MDF', E: 3.5e9, rho: 750, nu: 0.25 },
 };
-const PETG = { E: 2.0e9, rho: 1270, nu: 0.38 };
+const PETG = { E: 2.0e9, G: 0.75e9, rho: 1270, nu: 0.38 };
+
+// ---------------------------------------------------------------------------
+// sandwich plates: two fibre/epoxy skins bonded to a printed square-grid rib
+// core. Bending stiffness comes from the skins being held apart (∝ spacing²),
+// so thin, stiff skins on a light core beat a solid panel of the same weight.
+// Wet-layup laminate values (≈ 50 % fibre), woven 200 g/m² cloth.
+// ---------------------------------------------------------------------------
+export const SKINS = {
+  carbon: { name: 'carbon', cloth: '200 g/m² 2×2 twill carbon', tPly: 0.23, E: 45e9, rho: 1500, nu: 0.3, color: 0x26292e },
+  glass: { name: 'fibreglass', cloth: '200 g/m² plain-weave E-glass', tPly: 0.18, E: 18e9, rho: 1850, nu: 0.25, color: 0xd5ddd2 },
+};
+
+/**
+ * Light wood cores (typical values): end-grain balsa is the standard boat/aero
+ * core (grain runs through the thickness → high shear stiffness for its weight);
+ * paulownia is the lightest common hardware-store board; poplar plywood is
+ * light ply that also adds its own bending stiffness.
+ */
+export const WOOD_CORES = {
+  balsa: { name: 'end-grain balsa', rho: 150, E: 0.05e9, G: 0.16e9, sizes: [6, 10, 12, 19, 25], sheet: '610 × 1220 mm contour-kerfed sheets on scrim', short: 'Balsa' },
+  paulownia: { name: 'paulownia', rho: 280, E: 2.2e9, G: 0.25e9, sizes: [10, 12, 15, 19, 25], sheet: 'edge-glued boards (plane to thickness)', short: 'Paulownia' },
+  poplar: { name: 'poplar plywood', rho: 450, E: 6e9, G: 0.4e9, sizes: [6, 9, 12, 15, 18], sheet: '1220 × 2440 mm sheets', short: 'Poplar ply' },
+};
+
+export interface PlateProps {
+  name: string;
+  /** total thickness (mm) */
+  tMm: number;
+  /** bending stiffness (N·m) */
+  D: number;
+  /** transverse shear stiffness (N/m), Infinity for solid panels */
+  S: number;
+  /** mass per area (kg/m²) */
+  m: number;
+}
+
+export interface SandwichInfo extends PlateProps {
+  tSkinMm: number;
+  ribMm: number;
+  coreDensity: number;
+  /** a square of skin between ribs (Hz) */
+  skinPanelHz: number;
+}
+
+export function sandwichPlate(sw: SandwichSpec, pr: Printer): SandwichInfo {
+  const sk = SKINS[sw.skin];
+  const tf = (sw.plies * sk.tPly) / 1000;
+  const c = sw.coreMm / 1000;
+  const wood = sw.core === 'ribs' ? null : WOOD_CORES[sw.core];
+  const ribMm = sw.ribLines * pr.lineWidth;
+  const P = sw.ribPitchMm / 1000;
+  const solidity = wood ? 1 : Math.min(1, (2 * ribMm) / sw.ribPitchMm - (ribMm / sw.ribPitchMm) ** 2);
+  const d = c + tf;
+  const D =
+    (sk.E * tf * d * d) / (2 * (1 - sk.nu ** 2)) + (2 * sk.E * tf ** 3) / (12 * (1 - sk.nu ** 2)) + (wood ? (wood.E * c ** 3) / 12 : 0);
+  const Gc = wood ? wood.G : PETG.G * (ribMm / sw.ribPitchMm);
+  const S = (Gc * d * d) / c;
+  // epoxy: fillets on rib tops, or the resin a wood face soaks up
+  const bond = wood ? 0.2 : 0.15; // kg/m² per face
+  const m = 2 * sk.rho * tf + (wood ? wood.rho : PETG.rho) * c * solidity + 2 * bond;
+  const Ds = (sk.E * tf ** 3) / (12 * (1 - sk.nu ** 2));
+  const skinPanelHz = wood ? Infinity : 1.8 * (Math.PI / 2) * Math.sqrt(Ds / (sk.rho * tf)) * (2 / (P * P));
+  return {
+    name: `${sw.skin === 'carbon' ? 'Carbon' : 'Fibreglass'} sandwich (${sw.plies}+${sw.plies} plies on ${sw.coreMm} mm ${wood ? wood.name : 'printed ribs'})`,
+    tMm: sw.coreMm + 2 * sw.plies * sk.tPly,
+    D,
+    S,
+    m,
+    tSkinMm: sw.plies * sk.tPly,
+    ribMm,
+    coreDensity: solidity,
+    skinPanelHz,
+  };
+}
+
+export function plateProps(p: HybridParams, pr: Printer): PlateProps {
+  if (p.plateMaterial === 'sandwich') return sandwichPlate(p.sandwich, pr);
+  const pl = PLATES[p.plateMaterial];
+  const t = p.plateMm / 1000;
+  return { name: pl.name, tMm: p.plateMm, D: (pl.E * t ** 3) / (12 * (1 - pl.nu ** 2)), S: Infinity, m: pl.rho * t };
+}
+
+/** Plate thickness (mm) for the chosen material. */
+export function plateThickness(p: HybridParams, pr: Printer) {
+  return p.plateMaterial === 'sandwich' ? Math.round(sandwichPlate(p.sandwich, pr).tMm * 10) / 10 : p.plateMaterial === 'bb12' ? 12 : p.plateMaterial === 'mdf19' ? 19 : 18;
+}
+
+/** f11 of a plate panel a × b (m), edges between clamped and simply supported, with core-shear softening. */
+export function panelHz(pp: PlateProps, a: number, b: number) {
+  const k2 = Math.PI ** 2 * (1 / (a * a) + 1 / (b * b));
+  const Deff = pp.D / (1 + (pp.D * k2) / pp.S);
+  return 1.8 * (Math.PI / 2) * Math.sqrt(Deff / pp.m) * (1 / (a * a) + 1 / (b * b));
+}
+
+export interface PanelPlan {
+  /** panels per cabinet (2 outer plates + dividers) */
+  panels: number;
+  tilesPerPanel: number;
+  tileW: number;
+  tileH: number;
+  tilesX: number;
+  tilesY: number;
+  grams: number;
+  hours: number;
+  /** per cabinet */
+  clothM2: number;
+  epoxyKg: number;
+  plateKg: number;
+  birchKg: number;
+}
+
+/** The printed rib cores of the sandwich plates, tiled onto the bed, and the layup materials. */
+export function planPanels(p: HybridParams, g: Geometry, pr: Printer): PanelPlan {
+  const sw = p.sandwich;
+  const info = sandwichPlate(sw, pr);
+  const ux = pr.bedX - 2 * pr.margin;
+  const uy = pr.bedY - 2 * pr.margin;
+  const tile = (a: number, b: number) => {
+    const nx = Math.ceil(g.W / a);
+    const ny = Math.ceil(g.H / b);
+    return { nx, ny, n: nx * ny, w: g.W / nx, h: g.H / ny };
+  };
+  const t1 = tile(ux, uy);
+  const t2 = tile(uy, ux);
+  const t = t2.n < t1.n ? t2 : t1;
+  const panels = 2 + g.cores - 1;
+  const areaM2 = (g.W * g.H) / 1e6;
+  // the core grid + a solid 10 mm frame round every tile (the tiles are glued edge to edge)
+  const frame = (2 * (t.w + t.h) * 10 * sw.coreMm) / 1e9; // m³ per tile
+  const coreVolM3 = areaM2 * (sw.coreMm / 1000) * info.coreDensity + frame * t.n;
+  const printed = sw.core === 'ribs';
+  const grams = printed ? coreVolM3 * 1e6 * pr.filamentDensity * panels : 0;
+  const hours = printed ? ((coreVolM3 * 1e9) / pr.flow / 3600) * 1.3 * panels : 0;
+  const sk = SKINS[sw.skin];
+  const clothM2 = areaM2 * 2 * sw.plies * panels * 1.15;
+  const epoxyKg = clothM2 * 0.2 * 1.0 + areaM2 * 2 * (printed ? 0.15 : 0.2) * panels;
+  void sk;
+  return {
+    panels,
+    tilesPerPanel: printed ? t.n : 0,
+    tileW: t.w,
+    tileH: t.h,
+    tilesX: t.nx,
+    tilesY: t.ny,
+    grams,
+    hours,
+    clothM2,
+    epoxyKg,
+    plateKg: info.m * areaM2 * panels,
+    birchKg: 680 * 0.018 * areaM2 * panels,
+  };
+}
 
 export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: PrintPlan, pr: Printer, outdoor: boolean): Issue[] {
   const out: Issue[] = [];
-  const plate = PLATES[p.plateMaterial];
-  const tp = p.plateMm / 1000;
+  const plate = plateProps(p, pr);
   const passTop = p.type === 'folded-horn' ? 150 : p.type === 'waveguide' ? 20000 : 500;
   // limits for "bad" / "watch it": subs only play to ~150 Hz; a stuffed line or a box's
   // walls only need to stay clear of the low-mid band where they'd be excited strongly
@@ -1158,7 +1334,7 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
   // ---- printed walls spanning between plates/dividers (the floppiest part) ----
   const tw = p.wallMm / 1000;
   const span = g.coreMm / 1000;
-  const wm = g.construction === 'bends' ? plate : PETG;
+  const wm = g.construction === 'bends' ? (p.wallMm === 19 ? PLATES.mdf19 : PLATES.bb18) : PETG;
   const Dw = (wm.E * tw ** 3) / (12 * (1 - wm.nu ** 2));
   const fWall = (22.37 / (2 * Math.PI)) * Math.sqrt(Dw / (wm.rho * tw)) / (span * span); // clamped strip
   out.push({
@@ -1172,12 +1348,11 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
 
   // ---- side plates over the open channels ----
   let worst = { a: 0, b: 0, f: Infinity, label: '' };
-  const D = (plate.E * tp ** 3) / (12 * (1 - plate.nu ** 2));
   for (const r of g.spans) {
     const a = (r.x1 - r.x0) / 1000;
     const b = (r.y1 - r.y0) / 1000;
     if (a < 0.03 || b < 0.03) continue;
-    const f11 = 1.8 * (Math.PI / 2) * Math.sqrt(D / (plate.rho * tp)) * (1 / (a * a) + 1 / (b * b));
+    const f11 = panelHz(plate, a, b);
     if (f11 < worst.f) worst = { a, b, f: f11, label: r.label ?? 'channel' };
   }
   if (Number.isFinite(worst.f))
@@ -1186,8 +1361,55 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
       title: `Side-plate resonance: ${worst.f.toFixed(0)} Hz over the ${worst.label}`,
       body: `The ${plate.name} plate spans ${(worst.a * 1000).toFixed(0)} × ${(worst.b * 1000).toFixed(0)} mm unsupported there. ${
         worst.f < lim.plateWarn ? `Close to the band this cabinet plays — add printed posts or ribs in that space, use a thicker plate, or laminate a second plate.` : 'Comfortably above the band this cabinet plays.'
-      }`,
+      }${p.plateMaterial === 'sandwich' ? ` (18 mm birch there: ${panelHz(plateProps({ ...p, plateMaterial: 'bb18', plateMm: 18 }, pr), worst.a, worst.b).toFixed(0)} Hz.)` : ''}`,
     });
+
+  // ---- sandwich plates ----
+  if (p.plateMaterial === 'sandwich') {
+    const sw = p.sandwich;
+    const si = sandwichPlate(sw, pr);
+    const birch = plateProps({ ...p, plateMaterial: 'bb18', plateMm: 18 }, pr);
+    const pp = planPanels(p, g, pr);
+    const sk = SKINS[sw.skin];
+    const wood = sw.core === 'ribs' ? null : WOOD_CORES[sw.core];
+    out.push({
+      level: 'ok',
+      title: `${si.name}: ${si.tMm.toFixed(1)} mm, ${si.m.toFixed(1)} kg/m² — ${(si.D / birch.D).toFixed(1)}× the stiffness of 18 mm birch at ${Math.round((si.m / birch.m) * 100)} % of the weight`,
+      body: `Plates${g.cores > 1 ? ' and dividers' : ''} weigh ${pp.plateKg.toFixed(1)} kg per cabinet instead of ${pp.birchKg.toFixed(1)} kg in birch. The skins do the work: ${si.tSkinMm.toFixed(2)} mm of ${sk.name} on each face, held ${sw.coreMm} mm apart by ${wood ? `${wood.name} (${wood.rho} kg/m³)` : `${si.ribMm.toFixed(1)} mm printed ribs every ${sw.ribPitchMm} mm (core ${Math.round(si.coreDensity * 100)} % solid)`}. Doubling the core thickness makes it ~4× stiffer for little extra weight.`,
+    });
+    if (!wood)
+    out.push({
+      level: si.skinPanelHz < passTop * 3 ? 'warn' : 'ok',
+      title: `Skin between ribs: ${si.skinPanelHz.toFixed(0)} Hz`,
+      body:
+        si.skinPanelHz < passTop * 3
+          ? `Each ${sw.ribPitchMm} mm square of skin is a little drum close to the band this plays — tighten the rib pitch or add a ply.`
+          : `Each ${sw.ribPitchMm} mm square of skin is far above the band this cabinet plays. The rib grid also stops the skin denting under clamps or knocks.`,
+    });
+    out.push({
+      level: 'warn',
+      title: 'Damping: fibre skins ring',
+      body: `Carbon and glass/epoxy have far less internal damping than plywood, so panel resonances are sharper.${wood ? ` The ${wood.name} core helps — wood damps far better than plastic ribs — but a constrained-layer damping sheet on the inside face is still worth it.` : ''} Fill the rib cells with open-cell foam or pour a thin layer of viscoelastic (e.g. 2 mm of a constrained-layer damping sheet) on the inside skin before closing. ${p.type === 'folded-horn' ? 'For a horn sub the plates are already above the passband, so this is a refinement.' : 'Worth doing on a living-room speaker.'}`,
+    });
+    if (wood)
+      out.push({
+        level: 'ok',
+        title: `Making the plates: ${pp.panels} ${wood.name} core panel${pp.panels > 1 ? 's' : ''}, ${sw.coreMm} mm`,
+        body: `Buy ${wood.name} as ${wood.sheet}; common thicknesses ${wood.sizes.join(', ')} mm. Cut each core to the plate outline (bandsaw or jigsaw, sand the edge round). ${sw.core === 'balsa' ? 'Seal the end grain first with a thin coat of epoxy, let it go tacky, then lay up — balsa soaks up resin like a sponge. ' : 'Sand 80 grit and vacuum the dust. '}Wet-lay ${sw.plies} plies of ${sk.cloth} on one face (alternate 0/90 and ±45), peel ply, vacuum-bag or weight it flat; cure, flip, repeat. Wrap the cloth round the rounded edges, or edge-band with a strip of hardwood. Per cabinet: ~${pp.clothM2.toFixed(1)} m² of cloth and ~${pp.epoxyKg.toFixed(1)} kg of laminating epoxy. Bond to the printed core with thickened epoxy (room-temperature cure — PETG softens at ~75 °C). ${sw.core === 'balsa' ? 'Balsa crushes under bolt heads: drill oversize, fill with thickened epoxy, then re-drill (a "potted" hole) wherever a through-bolt goes.' : `${wood.name[0].toUpperCase() + wood.name.slice(1)} holds screws and bolts well — use big washers on the skin.`}`,
+      });
+    else
+    out.push({
+      level: 'ok',
+      title: `Making the plates: ${pp.panels} panel${pp.panels > 1 ? 's' : ''} × ${pp.tilesPerPanel} printed rib tiles (${pp.tilesX} × ${pp.tilesY}, ${Math.round(pp.tileW)} × ${Math.round(pp.tileH)} mm)`,
+      body: `Print the rib tiles flat (ribs standing up, ${sw.coreMm} mm tall), each with a solid 10 mm frame — ${(pp.grams / 1000).toFixed(1)} kg, ~${pp.hours.toFixed(0)} h. Glue the tiles into one panel on a flat table (epoxy, weights). Sand both faces flat, wipe with alcohol, then wet-lay ${sw.plies} plies of ${sk.cloth} on one face, alternating 0/90 and ±45 so it is stiff in every direction; peel ply on top and vacuum-bag (or just weight it under plastic on a flat surface). Cure, flip, repeat on the other face. Per cabinet: ~${pp.clothM2.toFixed(1)} m² of cloth and ~${pp.epoxyKg.toFixed(1)} kg of laminating epoxy. Use a ROOM-TEMPERATURE-cure epoxy and don't post-cure above ~55 °C — PETG softens at ~75 °C. Bond the finished plates to the cabinet core with thickened epoxy; through-bolts need printed or aluminium bosses in the rib core (fibre skins crack under bare bolt heads — use big washers).`,
+    });
+    if (outdoor)
+      out.push({
+        level: 'warn',
+        title: 'Outdoors: UV-protect the epoxy',
+        body: 'Epoxy yellows and chalks in sunlight. Finish with a UV-resistant 2-part clear coat (for the carbon look) or paint.',
+      });
+  }
 
   // ---- pressure / sealing ----
   const Vd = (d.sdCm2 / 1e4) * ((d.xmaxMm || 3) / 1000);

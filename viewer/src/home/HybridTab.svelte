@@ -3,7 +3,7 @@
   import Hybrid3D from './Hybrid3D.svelte';
   import { home, saveHome } from './homeState.svelte';
   import { DRIVERS } from './drivers';
-  import { buildGeometry, buildIssues, HYBRID_PRESETS, planPrint, simulate, type ProfileType } from './hybrid';
+  import { buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, planPanels, planPrint, plateProps, plateThickness, sandwichPlate, simulate, SKINS, WOOD_CORES, type PlateMaterial, type ProfileType, type SandwichCore } from './hybrid';
   import { cabinetDims, driverFor } from './hybridModels';
 
   const isSub = $derived(home.hybrid.edit === 'sub');
@@ -22,6 +22,32 @@
     return ns.map((n) => ({ n, r: simulate(p, d, geo, { coupled: n, floor: isSub, f0: isSub ? 15 : 20, f1: isSub ? 300 : 600 }) }));
   });
   const dims = $derived(cabinetDims(p));
+  // sandwich plates: keep the plate thickness in step with skins + core
+  $effect(() => {
+    if (!p.sandwich) p.sandwich = { ...DEFAULT_SANDWICH };
+    if (p.plateMaterial === 'sandwich') {
+      const t = plateThickness(p, home.hybrid.printer);
+      if (p.plateMm !== t) p.plateMm = t;
+    }
+  });
+  const sw = $derived(p.sandwich ?? DEFAULT_SANDWICH);
+  const swInfo = $derived(sandwichPlate(sw, home.hybrid.printer));
+  const panels = $derived(p.plateMaterial === 'sandwich' ? planPanels(p, geo, home.hybrid.printer) : null);
+  const birchRef = $derived(plateProps({ ...p, plateMaterial: 'bb18', plateMm: 18 }, home.hybrid.printer));
+  function setPlate(id: PlateMaterial, t?: number) {
+    p.plateMaterial = id;
+    if (t) p.plateMm = t;
+  }
+  function setCore(c: SandwichCore) {
+    p.sandwich.core = c;
+    if (c !== 'ribs') {
+      const sizes = WOOD_CORES[c].sizes;
+      p.sandwich.coreMm = sizes.reduce((a, b) => (Math.abs(b - p.sandwich.coreMm) < Math.abs(a - p.sandwich.coreMm) ? b : a));
+    }
+  }
+  const plateColor = $derived(
+    p.plateMaterial === 'mdf19' ? 0x9c7a55 : p.plateMaterial === 'sandwich' ? SKINS[sw.skin].color : 0xcfa874
+  );
   $effect(() => {
     JSON.stringify(home.hybrid);
     saveHome();
@@ -81,7 +107,7 @@
         <p class="small muted">Grey = printed plastic, dark = air. This profile is extruded {geo.coreMm.toFixed(0)} mm (into the screen){geo.cores > 1 ? ` as ${geo.cores} cores separated by ${geo.cores - 1} plywood divider${geo.cores > 2 ? 's' : ''}` : ''} and closed on both sides by the wooden plates. Bends sweep round, wall tips are half-round and the mouth lips roll out — the shapes 3D printing makes easy.</p>
       {:else if view === '3d'}
         <div class="vis-3d">
-          <Hybrid3D {geo} {plan} plateMm={p.plateMm} plateColor={p.plateMaterial === 'mdf19' ? 0x9c7a55 : 0xcfa874} coupled={showCoupled && isSub ? (p.mouth === 'corner' ? 4 : 2) : 1} mouth={p.mouth} />
+          <Hybrid3D {geo} {plan} plateMm={p.plateMm} {plateColor} dividerColor={p.plateMaterial === 'sandwich' ? plateColor : undefined} coupled={showCoupled && isSub ? (p.mouth === 'corner' ? 4 : 2) : 1} mouth={p.mouth} />
         </div>
         {#if isSub}
           <label class="toggle"><input type="checkbox" bind:checked={showCoupled} /> Show {p.mouth === 'corner' ? '4 cabinets (2 × 2)' : '2 cabinets'} coupled into one mouth</label>
@@ -211,9 +237,58 @@
       </div>
       <div class="chips">
         {#each [['bb18', 18, '18 mm birch'], ['bb12', 12, '12 mm birch'], ['mdf19', 19, '19 mm MDF']] as [id, t, lbl]}
-          <button class="chip" class:on={p.plateMaterial === id} onclick={() => { p.plateMaterial = id as 'bb18' | 'bb12' | 'mdf19'; p.plateMm = t as number; }}>{lbl} plates</button>
+          <button class="chip" class:on={p.plateMaterial === id} onclick={() => setPlate(id as PlateMaterial, t as number)}>{lbl} plates</button>
         {/each}
+        <button class="chip" class:on={p.plateMaterial === 'sandwich'} onclick={() => setPlate('sandwich')}>Fibre sandwich plates</button>
       </div>
+      {#if p.plateMaterial === 'sandwich'}
+        <div class="sandwich">
+          <div class="seg">
+            <button class:on={sw.skin === 'carbon'} onclick={() => (p.sandwich.skin = 'carbon')}>Carbon skins</button>
+            <button class:on={sw.skin === 'glass'} onclick={() => (p.sandwich.skin = 'glass')}>Fibreglass skins</button>
+          </div>
+          <div class="chips">
+            <span class="small muted" style="align-self:center">Core:</span>
+            <button class="chip" class:on={sw.core === 'ribs'} onclick={() => setCore('ribs')}>Printed ribs</button>
+            {#each Object.entries(WOOD_CORES) as [id, w]}
+              <button class="chip" class:on={sw.core === id} onclick={() => setCore(id as SandwichCore)}>{w.short}</button>
+            {/each}
+          </div>
+          <div class="field">
+            <label for="sw-plies">Cloth layers on each face</label>
+            <span class="val">{sw.plies} × {SKINS[sw.skin].tPly} mm = {swInfo.tSkinMm.toFixed(2)} mm</span>
+            <input id="sw-plies" type="range" min="1" max="6" step="1" bind:value={p.sandwich.plies} />
+          </div>
+          {#if sw.core === 'ribs'}
+            <div class="field">
+              <label for="sw-core">Rib core thickness</label><span class="val">{sw.coreMm} mm</span>
+              <input id="sw-core" type="range" min="8" max="50" step="1" bind:value={p.sandwich.coreMm} />
+            </div>
+            <div class="field">
+              <label for="sw-pitch">Rib spacing</label><span class="val">{sw.ribPitchMm} mm grid, ribs {swInfo.ribMm.toFixed(1)} mm ({sw.ribLines} line{sw.ribLines > 1 ? 's' : ''})</span>
+              <input id="sw-pitch" type="range" min="15" max="100" step="5" bind:value={p.sandwich.ribPitchMm} />
+            </div>
+            <div class="chips">
+              <span class="small muted" style="align-self:center">Rib lines:</span>
+              {#each [1, 2, 3] as n}<button class="chip" class:on={sw.ribLines === n} onclick={() => (p.sandwich.ribLines = n)}>{n}</button>{/each}
+            </div>
+          {:else}
+            <div class="chips">
+              <span class="small muted" style="align-self:center">{WOOD_CORES[sw.core].short} thickness:</span>
+              {#each WOOD_CORES[sw.core].sizes as t}<button class="chip" class:on={sw.coreMm === t} onclick={() => (p.sandwich.coreMm = t)}>{t} mm</button>{/each}
+            </div>
+          {/if}
+          <div class="stats">
+            <div class="stat"><div class="k">Plate</div><div class="v sm">{swInfo.tMm.toFixed(1)} mm</div><div class="s">{swInfo.m.toFixed(1)} kg/m² (birch 18: {birchRef.m.toFixed(1)})</div></div>
+            <div class="stat"><div class="k">Stiffness</div><div class="v sm">{(swInfo.D / birchRef.D).toFixed(1)}×</div><div class="s">18 mm birch</div></div>
+            {#if panels}
+              <div class="stat"><div class="k">Plates / cabinet</div><div class="v sm">{panels.plateKg.toFixed(1)} kg</div><div class="s">birch: {panels.birchKg.toFixed(1)} kg</div></div>
+              <div class="stat"><div class="k">Layup</div><div class="v sm">{panels.clothM2.toFixed(1)} m²</div><div class="s">cloth + {panels.epoxyKg.toFixed(1)} kg epoxy{panels.tilesPerPanel ? ` · ${panels.panels}×${panels.tilesPerPanel} rib tiles, ${(panels.grams / 1000).toFixed(1)} kg, ~${panels.hours.toFixed(0)} h` : ''}</div></div>
+            {/if}
+          </div>
+          <p class="small muted">{geo.cores > 1 ? 'Dividers are the same sandwich panel. ' : ''}Build steps and checks are in the build notes below.</p>
+        </div>
+      {/if}
       {#if p.type !== 'waveguide'}
         <div class="field">
           <label for="h-legs">{p.type === 'slot-port' ? 'Port folds' : 'Legs (folds + 1)'}</label><span class="val">{p.legs}</span>
@@ -321,6 +396,15 @@
 </div>
 
 <style>
+  .sandwich {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px;
+    margin: 6px 0 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
   .dimline {
     font-size: 13px;
     color: var(--amber);

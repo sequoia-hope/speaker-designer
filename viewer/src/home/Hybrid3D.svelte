@@ -9,6 +9,7 @@
     plan,
     plateMm,
     plateColor = 0xcfa874,
+    dividerColor,
     coupled = 1,
     mouth = 'edge',
   }: {
@@ -16,6 +17,8 @@
     plan: PrintPlan;
     plateMm: number;
     plateColor?: number;
+    /** dividers when they differ from the plywood strips (sandwich panels) */
+    dividerColor?: number;
     coupled?: number;
     mouth?: 'edge' | 'corner';
   } = $props();
@@ -35,7 +38,7 @@
     for (const h of geo.holes) shape.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x * s, y * s))));
     const coreGeo = new THREE.ExtrudeGeometry(shape, { depth: geo.coreMm * s, bevelEnabled: false, curveSegments: 4 });
     const printMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.6, side: THREE.DoubleSide });
-    const divMat = new THREE.MeshStandardMaterial({ color: plateColor, roughness: 0.7 });
+    const divMat = new THREE.MeshStandardMaterial({ color: dividerColor !== undefined ? 0xcfa874 : plateColor, roughness: 0.7 });
     const seamMat = new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
     const z0 = -geo.Etot / 2;
     for (let c = 0; c < geo.cores; c++) {
@@ -75,7 +78,10 @@
       }
       g.add(holder);
       if (c < geo.cores - 1) {
-        const dv = new THREE.Mesh(new THREE.ExtrudeGeometry(new THREE.Shape(outline()), { depth: plateMm * s, bevelEnabled: false }), divMat);
+        const dv = new THREE.Mesh(
+          new THREE.ExtrudeGeometry(new THREE.Shape(outline()), { depth: plateMm * s, bevelEnabled: false }),
+          dividerColor !== undefined ? new THREE.MeshStandardMaterial({ color: dividerColor, roughness: 0.35, metalness: 0.2 }) : divMat
+        );
         dv.rotation.y = -Math.PI / 2;
         dv.position.set((zc + geo.coreMm + plateMm) * s, 0, -(geo.W / 2) * s);
         g.add(dv);
@@ -192,7 +198,7 @@
     };
   });
   $effect(() => {
-    void [geo, plan, plateMm, explode, showPlates, coupled, mouth];
+    void [geo, plan, plateMm, plateColor, dividerColor, explode, showPlates, coupled, mouth];
     build();
   });
 </script>
@@ -203,7 +209,7 @@
     <label class="ex"><span>Plates apart</span><input type="range" min="0" max="1" step="0.01" bind:value={explode} aria-label="Explode plates" /></label>
     <button class="chip" class:on={showPlates} onclick={() => (showPlates = !showPlates)}>Side plates</button>
   </div>
-  <div class="hint">Light grey = printed, wood = plywood (plates, dividers, straight walls), red planes = where prints are cut into pieces. Drag to orbit.</div>
+  <div class="hint">Light grey = printed, wood = plywood (plates, dividers, straight walls; dark or pale green plates = carbon / fibreglass sandwich), red planes = where prints are cut into pieces. Drag to orbit.</div>
 </div>
 
 <style>

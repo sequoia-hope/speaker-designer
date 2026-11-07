@@ -132,6 +132,14 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   await page.getByRole('button', { name: 'Fully printed core' }).click();
   await expect(page.getByRole('heading', { name: 'Plywood strips (per cabinet)' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Printed bends + plywood walls' }).click();
+  // fibre sandwich plates: printed ribs, then a light-wood (balsa) core
+  await page.getByRole('button', { name: 'Fibre sandwich plates' }).click();
+  await expect(page.getByText(/Carbon sandwich \(3\+3 plies on 20 mm printed ribs\)/).first()).toBeVisible();
+  await expect(page.getByText(/Skin between ribs/)).toBeVisible();
+  await page.locator('.sandwich').getByRole('button', { name: 'Balsa' }).click();
+  await expect(page.getByText(/end-grain balsa core panel/)).toBeVisible();
+  await page.getByRole('button', { name: 'Fibreglass skins' }).click();
+  await expect(page.getByText(/Fibreglass sandwich/).first()).toBeVisible();
   await page.getByRole('button', { name: 'Assembled' }).click();
   await page.getByLabel('Use this horn for the outdoor subs').check();
   await page.getByRole('button', { name: /Living-room speaker/ }).click();
