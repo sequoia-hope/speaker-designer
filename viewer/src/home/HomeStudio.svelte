@@ -1,6 +1,6 @@
 <script lang="ts">
   import './home.css';
-  import { home } from './homeState.svelte';
+  import { home, saveHome } from './homeState.svelte';
   import { planFor } from './planning';
   import { designById } from './designs';
   import PartsTab from './PartsTab.svelte';
@@ -17,6 +17,12 @@
   let { onOpenLab, initialTab = 'room' }: { onOpenLab: () => void; initialTab?: Tab } = $props();
 
   let tab = $state<Tab>(initialTab);
+
+  // persist every change, whichever tab made it (tabs only save while mounted)
+  $effect(() => {
+    JSON.stringify(home);
+    saveHome();
+  });
   let scroller = $state<HTMLElement | null>(null);
 
   function go(t: Tab) {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import MiniChart from './MiniChart.svelte';
   import Speaker3D from './Speaker3D.svelte';
   import { home, saveHome } from './homeState.svelte';
@@ -39,11 +40,39 @@
     (Object.entries(home.system.roles) as [Role, string][]).filter(([, d]) => d === id).map(([r]) => r);
   function assign(role: Role) {
     home.system.roles[role] = home.activeDesign;
+    if (role === 'mains') home.hybrid.useLiving = false;
+    autoNote = null;
   }
   function resetDesign() {
     const p = designById(home.activeDesign);
-    if (p) home.designs[home.activeDesign] = { ...p.settings };
+    if (p) {
+      skipAuto = true;
+      home.designs[home.activeDesign] = { ...p.settings };
+    }
   }
+
+  // Customising a design that isn't in the sound system yet puts it in, so the
+  // Room tab (system planner) simulates what you're actually designing.
+  let autoNote = $state<string | null>(null);
+  let skipAuto = false;
+  let seen = { id: '', sig: '' };
+  $effect(() => {
+    const id = home.activeDesign;
+    const sig = JSON.stringify(home.designs[id]);
+    untrack(() => {
+      const edited = seen.id === id && seen.sig !== sig && !skipAuto;
+      seen = { id, sig };
+      skipAuto = false;
+      const p = designById(id);
+      if (!edited || !p || usedFor(id).length) return;
+      const role = p.roles[0];
+      const was = designById(home.system.roles[role])?.name ?? 'nothing';
+      home.system.roles[role] = id;
+      if (role === 'mains') home.hybrid.useLiving = false;
+      autoNote = `Now used as your ${ROLE_LABEL[role].toLowerCase()} in the Room tab (was ${was}).`;
+    });
+  });
+  const roomMains = $derived(home.hybrid.useLiving ? 'the printed hybrid speaker' : (designById(home.system.roles.mains)?.name ?? '—'));
 
   const L = (l: number) => `${l.toFixed(1)} L (${(l / 28.317).toFixed(2)} ft³)`;
   const dims = (d: { w: number; h: number; d: number }) =>
@@ -139,6 +168,13 @@
       {/each}
       <button class="chip" onclick={resetDesign}>↺ Reset design</button>
     </div>
+    {#if autoNote}
+      <p class="small sys-note" data-testid="design-auto-assigned">✓ {autoNote}</p>
+    {:else if usedFor(home.activeDesign).length === 0}
+      <p class="small sys-note warn" data-testid="design-not-in-system">Not in your sound system yet — the Room tab uses {roomMains} for the mains. Pick a role above, or change a setting and it's added automatically.</p>
+    {:else if home.hybrid.useLiving && usedFor(home.activeDesign).includes('mains')}
+      <p class="small sys-note warn">The Room tab is using the printed hybrid speaker as mains instead. <button class="linklike" onclick={() => (home.hybrid.useLiving = false)}>Use this design</button></p>
+    {/if}
   {/if}
 </section>
 <section class="card">
@@ -277,6 +313,26 @@
 </div>
 
 <style>
+  .sys-note {
+    margin: 8px 0 0;
+    padding: 6px 9px;
+    border-radius: 6px;
+    background: rgba(52, 211, 153, 0.1);
+    color: #6ee7b7;
+  }
+  .sys-note.warn {
+    background: rgba(251, 191, 36, 0.1);
+    color: #fcd34d;
+  }
+  .linklike {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+  }
   .gallery {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));

@@ -1022,7 +1022,7 @@
 <section class="card">
   <h2>Bass at your seat</h2>
   <p class="sub">
-    Using the <button class="linklike" onclick={onGoSpeaker}>{speakerLabel}</button> you are designing. 0 dB =
+    Using your mains, the <button class="linklike" onclick={onGoSpeaker}>{speakerLabel}</button> (change it in Speakers). 0 dB =
     what the pair would do with no room at all.
   </p>
   <MiniChart

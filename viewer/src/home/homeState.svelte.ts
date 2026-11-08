@@ -112,10 +112,9 @@ export function defaultState(): HomeState {
   };
 }
 
-function load(): HomeState {
+function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
   const d = defaultState();
   try {
-    const raw = localStorage.getItem(KEY);
     if (!raw) return d;
     const s = JSON.parse(raw);
     // hybrid designs saved before organic shapes / fat-nozzle defaults: start from the new presets
@@ -159,6 +158,15 @@ export function saveHome() {
   } catch {
     /* private mode etc. */
   }
+}
+
+// Keep several open browser tabs in step: another tab saved → adopt its state here,
+// so a stale tab can't overwrite newer edits on its next save.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY || !e.newValue || e.newValue === JSON.stringify(home)) return;
+    Object.assign(home, load(e.newValue));
+  });
 }
 
 export function resetHome() {
