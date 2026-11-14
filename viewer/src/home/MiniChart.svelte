@@ -93,7 +93,7 @@
     <line x1={sx(x)} x2={sx(x)} y1={padT} y2={height - padB} class="grid" />
     <text x={sx(x)} y={height - 6} class="tick" text-anchor="middle">{fmtX(x)}</text>
   {/each}
-  <text x={4} y={padT + 6} class="tick unit">{yLabel}</text>
+  <text x={padL + 4} y={padT + 9} class="tick unit">{yLabel}</text>
   <text x={padL - 4} y={height - 6} class="tick unit" text-anchor="end">Hz</text>
   {#each markers.filter((m) => m.x >= xMin && m.x <= xMax).sort((a, b) => a.x - b.x) as m, mi}
     <line

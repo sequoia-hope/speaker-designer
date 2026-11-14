@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import MiniChart from './MiniChart.svelte';
   import Speaker3D from './Speaker3D.svelte';
+  import BoxModeler from './BoxModeler.svelte';
   import { home, saveHome } from './homeState.svelte';
   import { DRIVERS, type DriverInfo } from './drivers';
   import { DESIGNS, designById, type Role } from './designs';
@@ -309,6 +310,8 @@
   <ul class="callouts">{#each box.notes as n}<li>{n}</li>{/each}</ul>
   <button class="btn" style="margin-top:12px; width:100%" onclick={onGoBuild}>See the woodworking plan →</button>
 </section>
+
+<BoxModeler {box} {woofer} />
 </div>
 </div>
 

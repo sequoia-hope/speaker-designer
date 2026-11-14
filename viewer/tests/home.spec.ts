@@ -38,7 +38,7 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   // Speaker tab: switch to vented, a port appears
   await page.getByRole('navigation', { name: 'Home Hi-Fi sections' }).getByRole('button', { name: /Speaker/ }).click();
   await page.getByRole('button', { name: 'Vented (ported)' }).click();
-  await expect(page.locator('.stat', { hasText: 'Port' })).toBeVisible();
+  await expect(page.locator('.stat .k', { hasText: /^Port$/ })).toBeVisible();
   await expect(page.locator('canvas').first()).toBeVisible();
   await page.getByRole('button', { name: 'On its stand' }).click();
 

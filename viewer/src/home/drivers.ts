@@ -15,6 +15,8 @@ export interface DriverInfo {
   qts: number;
   qes?: number;
   qms?: number;
+  /** voice-coil inductance (mH); only shapes impedance above a few hundred Hz */
+  leMh?: number;
   vasL: number;
   sdCm2: number;
   xmaxMm: number;
