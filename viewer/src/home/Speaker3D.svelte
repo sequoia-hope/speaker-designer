@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as THREE from 'three';
-  import { createViewer, onTap, type Viewer } from './three3d';
+  import { createViewer, sectionCaps, onTap, type Viewer } from './three3d';
   import type { BuildPlan } from './speakerBuild';
   import type { DriverInfo } from './drivers';
   import { fmtInFrac } from './roomAcoustics';
@@ -287,6 +287,9 @@
     grid.position.set(0, -0.001, -D / 2);
     root.add(grid);
 
+    // fill the cut faces so the section reads as solid panels, not hollow shells
+    if (cutaway) root.add(sectionCaps(root, clip));
+
     const key = `${W}|${H}|${D}|${showStand}`;
     if (key !== framedKey) {
       framedKey = key;
@@ -302,9 +305,17 @@
     const frameR = (d.frameDiaMm * s) / 2;
     const coneR = Math.sqrt(d.sdCm2 / 1e4 / Math.PI);
     const z0 = -(h.rebateDepthMm ?? 0) * s; // flange sits in the rebate
-    const ring = new THREE.Mesh(new THREE.CylinderGeometry(frameR, frameR, flange, 64, 1, false), mat(0x202226, 'woofer', { roughness: 0.5, metalness: 0.3 }));
-    ring.rotation.x = Math.PI / 2;
-    ring.position.z = z0 + flange / 2;
+    // frame flange: an annulus (open in the middle) so the cone shows through, and a cut-away shows only the rim
+    const ringShape = new THREE.Shape();
+    ringShape.absarc(0, 0, frameR, 0, Math.PI * 2, false);
+    const ringHole = new THREE.Path();
+    ringHole.absarc(0, 0, Math.min(coneR + 0.012, frameR - 0.004), 0, Math.PI * 2, true);
+    ringShape.holes.push(ringHole);
+    const ring = new THREE.Mesh(
+      new THREE.ExtrudeGeometry(ringShape, { depth: flange, bevelEnabled: false, curveSegments: 64 }),
+      mat(0x202226, 'woofer', { roughness: 0.5, metalness: 0.3 })
+    );
+    ring.position.z = z0;
     // cone: lathe profile, apex backwards
     const depth = coneR * 0.42;
     const pts = [
@@ -313,7 +324,7 @@
       new THREE.Vector2(coneR, 0),
     ];
     const cone = new THREE.Mesh(new THREE.LatheGeometry(pts, 64), mat(0x2b2b2f, 'woofer', { roughness: 0.9 }));
-    cone.rotation.x = -Math.PI / 2;
+    cone.rotation.x = Math.PI / 2; // lathe +y → +z, so the -depth apex points into the box
     cone.position.z = z0 + flange;
     const surround = new THREE.Mesh(new THREE.TorusGeometry(coneR + 0.006, 0.006, 10, 64, Math.PI), mat(0x151517, 'woofer'));
     surround.position.z = z0 + flange;
