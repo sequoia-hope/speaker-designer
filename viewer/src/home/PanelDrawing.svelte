@@ -6,6 +6,10 @@
 
   const t = $derived(plan.material.thicknessMm);
   const innerD = $derived(plan.box.externalMm.d - plan.box.baffleMm - t);
+  // brace front face, measured back from the baffle (fitInternals keeps it clear of magnets/ports)
+  const braceZ = $derived(plan.box.braceFromBaffleMm ?? innerD / 2);
+  // the back panel is drawn as you see it when marking it out: from behind, so x is mirrored
+  const backX = (xFront: number) => geom.w - xFront;
   // drawing axes per part (x across, y down), with the FRONT edge noted
   const geom = $derived.by(() => {
     switch (panel.id) {
@@ -30,11 +34,24 @@
     <line x1="0" y1={geom.h / 2 + 30} x2="38" y2={geom.h / 2 + 30} class="dim" />
     <text x="40" y={geom.h / 2 + 46} class="note">38 mm (1½″)</text>
   {:else if panel.id === 'back'}
-    <rect x={geom.w / 2 - 37.5} y={(geom.h * 2) / 3 - 37.5} width="75" height="75" class="cut" rx="4" />
-    <text x={geom.w / 2} y={(geom.h * 2) / 3 + 58} text-anchor="middle" class="note">terminal cup (use its template)</text>
-    {#if plan.box.port && home_port_rear(plan)}
-      <circle cx={geom.w / 2} cy={geom.h * 0.22} r={(plan.box.port.diameterMm + 4) / 2} class="cut" />
+    {@const tm = plan.box.terminalMm}
+    {#if tm.kind === 'cup'}
+      <rect x={backX(tm.xMm) - 37.5} y={tm.yMm - 37.5} width="75" height="75" class="cut" rx="4" />
+      <text x={backX(tm.xMm)} y={tm.yMm + 58} text-anchor="middle" class="note">terminal cup (use its template)</text>
+    {:else}
+      <circle cx={backX(tm.xMm) - 9.5} cy={tm.yMm} r="4.5" class="cut" />
+      <circle cx={backX(tm.xMm) + 9.5} cy={tm.yMm} r="4.5" class="cut" />
+      <text x={backX(tm.xMm)} y={tm.yMm + 22} text-anchor="middle" class="note">binding posts</text>
     {/if}
+    {#if plan.box.port}
+      {#each plan.box.rearPorts as rp}
+        <circle cx={backX(rp.xMm)} cy={rp.yMm} r={(plan.box.port.diameterMm + 4) / 2} class="cut" />
+      {/each}
+      {#if plan.box.rearPorts.length}
+        <text x={backX(plan.box.rearPorts[0].xMm)} y={plan.box.rearPorts[0].yMm + (plan.box.port.diameterMm + 4) / 2 + 16} text-anchor="middle" class="note">port Ø{plan.box.port.diameterMm + 4}</text>
+      {/if}
+    {/if}
+    <text x={geom.w / 2} y={geom.h - 8} text-anchor="middle" class="note">seen from behind</text>
   {:else if panel.id === 'stand-top'}
     <circle cx={geom.w / 2} cy={geom.h / 2} r="12.7" class="cut" />
     <text x={geom.w / 2} y={geom.h / 2 + 34} text-anchor="middle" class="note">1″ fill hole</text>
@@ -45,12 +62,12 @@
     {/each}
   {/if}
   {#if hasBrace && panel.id === 'side'}
-    <line x1={innerD / 2} y1="0" x2={innerD / 2} y2={geom.h} class="mark" />
-    <text x={innerD / 2 + 4} y="16" class="note">brace face</text>
+    <line x1={braceZ} y1="0" x2={braceZ} y2={geom.h} class="mark" />
+    <text x={braceZ + 4} y="16" class="note">brace face</text>
   {/if}
   {#if hasBrace && panel.id === 'topbottom'}
-    <line x1="0" y1={geom.h - innerD / 2} x2={geom.w} y2={geom.h - innerD / 2} class="mark" />
-    <text x="4" y={geom.h - innerD / 2 - 5} class="note">brace face</text>
+    <line x1="0" y1={geom.h - braceZ} x2={geom.w} y2={geom.h - braceZ} class="mark" />
+    <text x="4" y={geom.h - braceZ - 5} class="note">brace face</text>
   {/if}
   {#if geom.front === 'left'}
     <text x={-8} y={geom.h / 2} text-anchor="middle" class="front" transform={`rotate(-90 -8 ${geom.h / 2})`}>FRONT EDGE</text>
@@ -64,13 +81,6 @@
   <text x={geom.w + 22} y={geom.h / 2} class="dt" transform={`rotate(90 ${geom.w + 22} ${geom.h / 2})`} text-anchor="middle">{inch(geom.h)} · {Math.round(geom.h)}</text>
 </svg>
 
-<script lang="ts" module>
-  import type { BuildPlan as BP } from './speakerBuild';
-  // the back has a port hole only for a rear-ported vented box
-  export function home_port_rear(plan: BP) {
-    return !plan.holes.some((h) => h.kind === 'port');
-  }
-</script>
 
 <style>
   .pd {

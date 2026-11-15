@@ -272,3 +272,36 @@ export function boxSpecOf(box: BoxDesign): BoxSpec {
   }
   return { kind: 'sealed', netL: box.netVolumeL };
 }
+
+// ---------------------------------------------------------------------------
+// Comparison pins and summaries
+// ---------------------------------------------------------------------------
+
+/** A design frozen for side-by-side comparison (the driver is copied so later edits don't move it). */
+export interface ModelPin {
+  id: string;
+  label: string;
+  driver: DriverInfo;
+  count: number;
+  box: BoxSpec;
+}
+
+export function boxLabel(driver: DriverInfo, count: number, box: BoxSpec) {
+  const n = count > 1 ? `${count}× ` : '';
+  const b = box.kind === 'vented' ? `vented ${box.netL.toFixed(0)} L @ ${box.fbHz.toFixed(0)} Hz` : `sealed ${box.netL.toFixed(0)} L`;
+  return `${n}${driver.model} · ${b}`;
+}
+
+/** −3 dB point of the 2.83 V curve relative to its passband. */
+export function f3Of(r: ModelResult): number {
+  for (let i = 0; i < r.freqs.length; i++) if (r.spl283[i] >= r.sensitivity283 - 3) return r.freqs[i];
+  return r.freqs[r.freqs.length - 1];
+}
+
+/** Reference efficiency → 2.83 V / 1 m half-space sensitivity implied by the T/S numbers. */
+export function sensitivityFromTS(d: DriverInfo): number {
+  const m = tsToMech(d);
+  const eta0 = (RHO / (2 * Math.PI * C)) * ((m.Bl * m.Bl * m.Sd * m.Sd) / (m.Re * m.Mms * m.Mms));
+  // half-space 1 W into Re, then 2.83 V into Re delivers 8/Re W
+  return 112.16 + 10 * Math.log10(eta0) + 10 * Math.log10(8 / m.Re);
+}

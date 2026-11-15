@@ -165,6 +165,16 @@ export interface BoxDesign {
   responseDb: { f: number; db: number }[];
   warnings: string[];
   notes: string[];
+  // ---- set by fitInternals() once the baffle holes are laid out ----
+  /** window brace front face, mm behind the baffle's inner face; null = no brace */
+  braceFromBaffleMm: number | null;
+  /** rear port centres on the back panel (x from the left seen from the front, y from the top), mm */
+  rearPorts: { xMm: number; yMm: number }[];
+  /** speaker-wire terminal on the back panel, same frame as rearPorts: a 75 mm square
+   *  cup, or (when there's no room for one) a pair of binding posts */
+  terminalMm: { xMm: number; yMm: number; kind: 'cup' | 'posts' };
+  /** parts that physically collide or don't fit — empty for a buildable design */
+  fitIssues: string[];
 }
 
 export interface BuildPlan {
@@ -203,7 +213,12 @@ export interface BuildStep {
 // 1. Box alignment
 // ---------------------------------------------------------------------------
 
-export function designBox(o: BuildOptions): BoxDesign {
+/**
+ * `portObstacleMm`: depth taken up by drivers in the rear port's path (set by
+ * makePlan after the holes are laid out), so the port and the free air at its
+ * inner end must also clear them.
+ */
+export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
   const arr: Arrangement = o.arrangement ?? 'wt';
   const n = wooferCountOf(arr);
   const d0 = o.driverWoofer;
@@ -219,6 +234,7 @@ export function designBox(o: BuildOptions): BoxDesign {
   let alignment: BoxAlignment;
   let netL: number;
   let port: PortDesign | null = null;
+  let fbTarget = 0;
 
   if (o.boxType === 'sealed') {
     const qtc = Math.max(o.targetQtc, d.qts * 1.08);
@@ -256,107 +272,206 @@ export function designBox(o: BuildOptions): BoxDesign {
       alpha: d.vasL / netL,
       ql: 7,
     };
-    port = designPort(d, netL, fb);
-    notes.push(
-      `Vented: tuned to ${fb.toFixed(0)} Hz. Below that, output falls at 24 dB/octave and the cone unloads, so keep a high-pass (or a sub crossover) below tuning if you play loud.`
-    );
+    fbTarget = fb;
   }
-
-  // gross internal = net + woofer displacement + port + braces (~4 %)
-  const portVolL = port ? (Math.PI * (port.diameterMm / 2 + 3) ** 2 * port.lengthMm * port.count) / 1e6 : 0;
-  const grossL = (netL + (d.displacementL ?? 0.6) + portVolL) * 1.04;
 
   // ---- proportions ----
   const fw = d0.frameDiaMm;
   const ft = tw?.frameDiaMm ?? 0;
   const gap = 6;
-  const portSpan = port && (o.portSide === 'front' && arr !== 'center') ? port.diameterMm + 30 : 0;
-  // space the drivers need on the baffle (external, mm)
-  let needExtW: number;
-  let needExtH: number;
-  if (arr === 'center') {
-    needExtW = 2 * fw + (ft ? ft + 2 * gap : gap) + 2 * 14;
-    needExtH = Math.max(fw, ft) + 2 * 14;
-  } else {
-    needExtW = Math.max(fw, ft) + 2 * 12;
-    const stack = arr === 'mtm' || arr === 'tower' ? 2 * fw + gap : fw;
-    needExtH = stack + (ft ? ft + gap : 0) + 2 * 15 + portSpan;
-  }
+  const frontPort = o.portSide === 'front' && arr !== 'center';
   const ratios =
     o.aspect === 'tall'
       ? { h: 2.2, d: 1.3 }
       : o.aspect === 'cube'
         ? { h: 1.15, d: 1.1 }
         : { h: 1.6, d: 1.25 };
-  const V = grossL * 1e6; // mm³
   const depthMin = (d0.mountDepthMm ?? 80) + 25 - (baffle - t);
-  let wi: number;
-  let hi: number;
-  let di: number;
-  let deadSpaceMm = 0;
-  if (arr === 'tower') {
-    // tweeter at seated ear height (≈ standTweeterHeightMm, default ~0.95 m)
-    const tweeterFromTop = ft ? ft / 2 + 16 : 60;
-    const extH = Math.round((o.standTweeterHeightMm || 950) + tweeterFromTop);
-    hi = extH - 2 * t;
-    wi = needExtW - 2 * t;
-    di = V / (wi * hi);
-    // a tall speaker needs a reasonable footprint to be stable (≥ ~10″ deep outside)
-    const towerDepthMin = Math.max(depthMin, 230);
-    if (di < towerDepthMin) {
-      di = towerDepthMin;
+
+  /**
+   * Internal box for a gross volume. `needDi` forces at least that internal depth
+   * (keeping the volume): returns null if that can't be done without the box
+   * becoming too short for its drivers or absurdly deep.
+   */
+  function shapeFor(grossL: number, p: PortDesign | null, needDi: number) {
+    const portSpan = p && frontPort ? p.diameterMm + 30 : 0;
+    // space the drivers need on the baffle (external, mm)
+    let needExtW: number;
+    let needExtH: number;
+    if (arr === 'center') {
+      needExtW = 2 * fw + (ft ? ft + 2 * gap : gap) + 2 * 14;
+      needExtH = Math.max(fw, ft) + 2 * 14;
+    } else {
+      needExtW = Math.max(fw, ft) + 2 * 12;
+      const stack = arr === 'mtm' || arr === 'tower' ? 2 * fw + gap : fw;
+      needExtH = stack + (ft ? ft + gap : 0) + 2 * 15 + portSpan;
     }
-    if (V / (wi * di) < hi - t) {
-      // the box is taller than the air volume needs: make it deep enough for the
-      // woofers and wall off the bottom with a false floor (fill below with sand)
-      const activeH = Math.max(V / (wi * di), needExtH - 2 * t);
-      deadSpaceMm = Math.max(0, Math.round(hi - activeH - t));
-    }
-  } else if (arr === 'center') {
-    wi = needExtW - 2 * t;
-    hi = needExtH - 2 * t;
-    di = V / (wi * hi);
-    if (di < depthMin) {
-      di = depthMin;
-    }
-    if (di > 1.6 * hi + 120) {
-      // too deep for a TV console: grow the height instead
-      di = Math.max(depthMin, 1.3 * hi);
-      hi = V / (wi * di);
-    }
-  } else {
-    wi = Math.cbrt(V / (ratios.h * ratios.d));
-    wi = Math.max(wi, needExtW - 2 * t);
-    const hd = V / wi;
-    hi = Math.sqrt((hd * ratios.h) / ratios.d);
-    di = hd / hi;
-    if (hi < needExtH - 2 * t) {
-      hi = needExtH - 2 * t;
+    const needW = needExtW - 2 * t;
+    const needH = needExtH - 2 * t;
+    const V = grossL * 1e6; // mm³
+    const minDi = Math.max(depthMin, needDi);
+    let wi: number;
+    let hi: number;
+    let di: number;
+    let dead = 0;
+    if (arr === 'tower') {
+      // tweeter at seated ear height (≈ standTweeterHeightMm, default ~0.95 m)
+      const tweeterFromTop = ft ? ft / 2 + 16 : 60;
+      const extH = Math.round((o.standTweeterHeightMm || 950) + tweeterFromTop);
+      hi = extH - 2 * t;
+      wi = needW;
+      // a tall speaker needs a reasonable footprint to be stable (≥ ~10″ deep outside)
+      di = Math.max(V / (wi * hi), minDi, 230);
+      if (V / (wi * di) < hi - t) {
+        // the box is taller than the air volume needs: wall off the bottom with a
+        // false floor (fill below with sand)
+        const activeH = Math.max(V / (wi * di), needH);
+        dead = Math.max(0, Math.round(hi - activeH - t));
+      }
+    } else if (arr === 'center') {
+      wi = needW;
+      hi = needH;
       di = V / (wi * hi);
+      if (di > 1.6 * hi + 120) {
+        // too deep for a TV console: grow the height instead
+        di = 1.3 * hi;
+        hi = V / (wi * di);
+      }
+      if (di < minDi) {
+        di = minDi;
+        hi = V / (wi * di);
+        if (hi < needH) {
+          if (needDi > 0) return null;
+          hi = needH;
+        }
+      }
+    } else {
+      wi = Math.cbrt(V / (ratios.h * ratios.d));
+      wi = Math.max(wi, needW);
+      const hd = V / wi;
+      hi = Math.sqrt((hd * ratios.h) / ratios.d);
+      di = hd / hi;
+      if (hi < needH) {
+        hi = needH;
+        di = V / (wi * hi);
+      }
+      if (di < minDi) {
+        // deeper, keeping the volume: shrink the height first, then the width
+        di = minDi;
+        hi = V / (wi * di);
+        if (hi < needH) {
+          hi = needH;
+          wi = Math.max(needW, V / (hi * di));
+          if (V / (hi * di) < needW - 1e-6) {
+            // even the smallest baffle that holds the drivers is too much volume at this depth
+            if (needDi > depthMin) return null;
+            hi = Math.max(V / (wi * di), needH);
+          }
+        }
+        // a box much deeper than it is tall or wide is not a sensible speaker
+        if (needDi > depthMin && di > 1.7 * Math.max(wi, hi)) return null;
+      }
     }
-    if (di < depthMin) {
-      di = depthMin;
-      hi = Math.max(V / (wi * di), needExtH - 2 * t);
+    return { wi: Math.round(wi), hi: Math.round(hi), di: Math.round(di), dead };
+  }
+
+  // gross internal = net + woofer displacement + port + braces (~4 %)
+  const grossOf = (p: PortDesign | null) =>
+    (netL + (d.displacementL ?? 0.6) + (p ? (Math.PI * (p.diameterMm / 2 + 3) ** 2 * p.lengthMm * p.count) / 1e6 : 0)) * 1.04;
+
+  type Shape = { wi: number; hi: number; di: number; dead: number };
+  let shape: Shape | null = null;
+  if (o.boxType === 'vented') {
+    // The port must fit: its inner end ≥ one diameter from the far wall, and it
+    // must be at least as long as the panel it goes through. Try, in order:
+    // the textbook port (box made deeper if needed) → a narrower port (more air
+    // speed) → a higher tuning. If nothing fits, the box is designed sealed.
+    const panelT = frontPort ? baffle : t;
+    const tryPort = (p: PortDesign) => {
+      if (p.lengthMm < panelT) return null;
+      const need = p.lengthMm - panelT + p.diameterMm + (frontPort ? 0 : portObstacleMm);
+      const sh = shapeFor(grossOf(p), p, need);
+      return sh && sh.di >= need - 1 ? sh : null;
+    };
+    const V_MAX_OK = 25;
+    const textbook = designPort(d, netL, fbTarget);
+    let chosen: { p: PortDesign; sh: Shape; why: 'ok' | 'narrow' | 'wide' | 'tuning' } | null = null;
+    const first = tryPort(textbook);
+    if (first) chosen = { p: textbook, sh: first, why: 'ok' };
+    const sizes = PORT_TUBES_MM;
+    if (!chosen && textbook.lengthMm < panelT) {
+      // too short to be a tube: a wider port is longer for the same tuning
+      for (const D of sizes.filter((x) => x > textbook.diameterMm)) {
+        const p = designPort(d, netL, fbTarget, D, 1);
+        const sh = tryPort(p);
+        if (sh) {
+          chosen = { p, sh, why: 'wide' };
+          break;
+        }
+      }
+    }
+    if (!chosen) {
+      for (const D of [...sizes].reverse().filter((x) => x < textbook.diameterMm || textbook.count > 1)) {
+        const p = designPort(d, netL, fbTarget, D, 1);
+        if (p.peakVelocityMs > V_MAX_OK) continue;
+        const sh = tryPort(p);
+        if (sh) {
+          chosen = { p, sh, why: 'narrow' };
+          break;
+        }
+      }
+    }
+    for (let k = 1; !chosen && k <= 14; k++) {
+      const fb = fbTarget * Math.pow(1.04, k);
+      for (const D of [...sizes].reverse()) {
+        for (const count of [1, 2]) {
+          const p = designPort(d, netL, fb, D, count);
+          if (p.peakVelocityMs > V_MAX_OK) continue;
+          const sh = tryPort(p);
+          if (sh) {
+            chosen = { p, sh, why: 'tuning' };
+            break;
+          }
+        }
+        if (chosen) break;
+      }
+    }
+    if (chosen) {
+      port = chosen.p;
+      shape = chosen.sh;
+      alignment = { kind: 'vented', fsHz: d.fsHz, fbHz: port.fbHz, qts: d.qts, alpha: d.vasL / netL, ql: 7 };
+      notes.push(
+        `Vented: tuned to ${port.fbHz.toFixed(0)} Hz. Below that, output falls at 24 dB/octave and the cone unloads, so keep a high-pass (or a sub crossover) below tuning if you play loud.`
+      );
+      if (chosen.why === 'narrow')
+        warnings.push(
+          `The usual Ø${textbook.diameterMm} mm port would be ${textbook.lengthMm.toFixed(0)} mm long — too long for this box. Using a narrower Ø${port.diameterMm} mm port (${port.lengthMm.toFixed(0)} mm); its air reaches ${port.peakVelocityMs.toFixed(0)} m/s at full excursion, so it may chuff when played loud.`
+        );
+      if (chosen.why === 'wide')
+        notes.push(`A Ø${textbook.diameterMm} mm port would be shorter than the panel is thick, so a wider Ø${port.diameterMm} mm port (${port.lengthMm.toFixed(0)} mm) is used.`);
+      if (chosen.why === 'tuning')
+        warnings.push(
+          `No port tuned to ${fbTarget.toFixed(0)} Hz fits inside this box (it would need ${textbook.lengthMm.toFixed(0)} mm of tube). Tuning raised to ${port.fbHz.toFixed(0)} Hz so a ${port.count > 1 ? `pair of Ø${port.diameterMm} mm ports` : `Ø${port.diameterMm} mm port`} fits. For deeper tuning use a bigger box, an elbow / slot port, or a passive radiator.`
+        );
+      if (shape.di > (shapeFor(grossOf(port), port, 0)?.di ?? 0) + 2)
+        notes.push(`The box is deeper than its usual proportions so the port ends at least one diameter (${port.diameterMm} mm) clear of the ${frontPort ? 'back' : 'front'} wall.`);
+    } else {
+      const alpha = d.vasL / netL;
+      alignment = { kind: 'sealed', fcHz: d.fsHz * Math.sqrt(alpha + 1), qtc: d.qts * Math.sqrt(alpha + 1) };
+      warnings.push(
+        `No practical port fits this box at any sensible tuning (the textbook one would be ${textbook.lengthMm.toFixed(0)} mm long), so it is designed SEALED at the same ${netL.toFixed(0)} L (Qtc ${alignment.qtc.toFixed(2)}). Make the box bigger, or use a passive radiator, if you want it vented.`
+      );
     }
   }
-  // round to whole millimetres
-  wi = Math.round(wi);
-  hi = Math.round(hi);
-  di = Math.round(di);
+  if (!shape) shape = shapeFor(grossOf(port), port, 0)!;
+  const grossL = grossOf(port);
+  let { wi, hi, di } = shape;
+  const deadSpaceMm = shape.dead;
   if (deadSpaceMm > 0)
     notes.push(
       `Floor-standing: the woofers only need ${netL.toFixed(0)} L, so the bottom ${Math.round(deadSpaceMm)} mm is walled off with a false floor. Fill that space with dry sand through a hole before closing it — a heavy base keeps a tall speaker stable and dead.`
     );
-  if (port && port.lengthMm > di - 40 && port.lengthMm < hi) {
-    notes.push(
-      'The port is longer than the box is deep — it needs a 90° elbow, or mount it on the side/bottom. Alternatively use two smaller ports (shorter for the same tuning).'
-    );
-  }
-  if (port && !port.fitsInBox) {
-    warnings.push(
-      `Port length ${port.lengthMm.toFixed(0)} mm does not fit. Try "Box volume" ↑, tuning ↑, or a smaller woofer.`
-    );
-  }
+  void grossL;
 
   const ext = { w: wi + 2 * t, h: hi + 2 * t, d: di + t + baffle };
 
@@ -397,19 +512,252 @@ export function designBox(o: BuildOptions): BoxDesign {
     responseDb,
     warnings,
     notes,
+    braceFromBaffleMm: null,
+    rearPorts: [],
+    terminalMm: { xMm: ext.w / 2, yMm: (ext.h * 2) / 3, kind: 'cup' },
+    fitIssues: [],
   };
 }
 
-export function designPort(d: DriverInfo, netL: number, fbHz: number): PortDesign {
+// ---------------------------------------------------------------------------
+// 1b. Do the parts inside actually fit?
+// ---------------------------------------------------------------------------
+//
+// Coordinates (mm): x from the left outer edge seen from the front, y down from
+// the top outer edge, z back from the front face of the baffle. Each part is a
+// simple solid: driver baskets/magnets and port tubes are cylinders along z, the
+// terminal cup a box, the window brace a slab with a 38 mm frame. A port's open
+// inner end also needs one diameter of free air in front of it.
+
+export const TERMINAL_CUP_MM = 75;
+export const BRACE_FRAME_MM = 38;
+const TERMINAL_DEPTH_MM = 12; // how far the cup sticks into the box past the back panel
+
+interface Solid {
+  label: string;
+  x: number;
+  y: number;
+  /** cylinder radius, or half-size of a square */
+  r: number;
+  square?: boolean;
+  z0: number;
+  z1: number;
+  group: string;
+}
+
+function lateralOverlap(a: Solid, b: Solid, margin = 2) {
+  if (a.square && b.square) return Math.abs(a.x - b.x) < a.r + b.r + margin && Math.abs(a.y - b.y) < a.r + b.r + margin;
+  if (a.square || b.square) {
+    const [sq, c] = a.square ? [a, b] : [b, a];
+    const dx = Math.max(Math.abs(c.x - sq.x) - sq.r, 0);
+    const dy = Math.max(Math.abs(c.y - sq.y) - sq.r, 0);
+    return Math.hypot(dx, dy) < c.r + margin;
+  }
+  return Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r + margin;
+}
+const zOverlap = (a: { z0: number; z1: number }, b: { z0: number; z1: number }, margin = 2) => a.z0 < b.z1 + margin && b.z0 < a.z1 + margin;
+
+export interface FitResult {
+  braceFromBaffleMm: number | null;
+  rearPorts: { xMm: number; yMm: number }[];
+  terminalMm: { xMm: number; yMm: number; kind: 'cup' | 'posts' };
+  issues: string[];
+  notes: string[];
+  /** > 0: drivers sit in the rear port's path this deep — re-design the box with room for them */
+  portObstacleMm: number;
+}
+
+export function fitInternals(box: BoxDesign, holes: Hole[], o: BuildOptions): FitResult {
+  const t = box.wallMm;
+  const bt = box.baffleMm;
+  const { w: W, h: H, d: Dx } = box.externalMm;
+  const zIn0 = bt;
+  const zIn1 = Dx - t;
+  const innerD = zIn1 - zIn0;
+  // usable chamber from the top: above the false floor in a tower
+  const floorTop = H - t - (box.deadSpaceMm > 0 ? box.deadSpaceMm + t : 0);
+  const issues: string[] = [];
+  const notes: string[] = [];
+  let portObstacleMm = 0;
+  const wf = o.driverWoofer;
+  const tw = o.driverTweeter;
+  const port = box.port;
+
+  // ---- fixed solids: drivers on the baffle, front ports ----
+  const solids: Solid[] = [];
+  const mouths: Solid[] = [];
+  holes.forEach((h, i) => {
+    const reb = h.rebateDepthMm ?? 0;
+    if (h.kind === 'woofer') {
+      const md = wf.mountDepthMm ?? 80;
+      solids.push({ label: h.label + ' basket', x: h.xMm, y: h.yMm, r: h.throughDiaMm / 2, z0: reb, z1: reb + 0.55 * md, group: 'h' + i });
+      solids.push({ label: h.label + ' magnet', x: h.xMm, y: h.yMm, r: wf.frameDiaMm / 4, z0: reb + 0.55 * md, z1: reb + md, group: 'h' + i });
+    } else if (h.kind === 'tweeter' && tw) {
+      solids.push({ label: h.label, x: h.xMm, y: h.yMm, r: h.throughDiaMm / 2, z0: reb, z1: reb + (tw.mountDepthMm ?? 35), group: 'h' + i });
+    } else if (h.kind === 'port' && port) {
+      const r = h.throughDiaMm / 2;
+      solids.push({ label: 'Port tube', x: h.xMm, y: h.yMm, r, z0: 0, z1: port.lengthMm, group: 'h' + i });
+      mouths.push({ label: 'air in front of the port', x: h.xMm, y: h.yMm, r, z0: port.lengthMm, z1: port.lengthMm + port.diameterMm, group: 'h' + i });
+    }
+  });
+  const drivers = solids.filter((s) => !s.label.startsWith('Port'));
+  for (const s of drivers)
+    if (s.z1 > zIn1 - 3) issues.push(`${s.label} reaches the back panel (needs ${Math.round(s.z1 - zIn0 + 3)} mm inside, box has ${Math.round(innerD)} mm).`);
+
+  // ---- rear ports: highest spot on the back that clears the drivers ----
+  const rearPorts: { xMm: number; yMm: number }[] = [];
+  const frontPort = holes.some((h) => h.kind === 'port');
+  if (port && !frontPort) {
+    const flare = port.diameterMm + 4;
+    const r = flare / 2;
+    const xs = port.count === 1 ? [W / 2] : [W / 2 - (flare / 2 + 8), W / 2 + (flare / 2 + 8)];
+    const tubes = (y: number) =>
+      xs.flatMap((x, i) => [
+        { label: 'Rear port tube', x, y, r, z0: Dx - port.lengthMm, z1: Dx, group: 'rp' + i },
+        { label: 'air in front of the rear port', x, y, r, z0: Dx - port.lengthMm - port.diameterMm, z1: Dx - port.lengthMm, group: 'rp' + i },
+      ]);
+    const clear = (y: number) => tubes(y).every((p) => drivers.every((s) => !(lateralOverlap(p, s) && zOverlap(p, s))));
+    let best: number | null = null;
+    for (let y = t + 10 + r; y <= floorTop - 10 - r; y += 5)
+      if (clear(y)) {
+        best = y;
+        break;
+      }
+    if (best === null) {
+      // no spot clears every magnet: make the box deep enough to pass behind them at the top
+      const y = t + 10 + r;
+      let need = 0;
+      for (const p of tubes(y)) for (const s of drivers) if (lateralOverlap(p, s)) need = Math.max(need, s.z1 - zIn0 + 3);
+      portObstacleMm = need;
+      best = y;
+      issues.push(`The rear port runs into the ${drivers.find((s) => tubes(y).some((p) => lateralOverlap(p, s) && zOverlap(p, s)))?.label ?? 'drivers'}.`);
+    }
+    for (const x of xs) rearPorts.push({ xMm: x, yMm: best });
+    for (const p of tubes(best)) {
+      solids.push(...(p.label.startsWith('air') ? [] : [p]));
+      if (p.label.startsWith('air')) mouths.push(p);
+    }
+  }
+
+  // ---- terminal cup: ⅓ up the back, or the nearest spot that clears everything ----
+  const half = TERMINAL_CUP_MM / 2;
+  // binding posts: two 4 mm-plug posts 19 mm apart, nuts inside → ~45 × 25 mm, 25 mm deep
+  const POSTS = { half: 23, depth: 25 };
+  const cupAt = (x: number, y: number, posts = false): Solid => ({
+    label: posts ? 'Binding posts' : 'Terminal cup',
+    x,
+    y,
+    r: posts ? POSTS.half : half,
+    square: true,
+    z0: zIn1 - (posts ? POSTS.depth - t : TERMINAL_DEPTH_MM),
+    z1: Dx,
+    group: 'term',
+  });
+  const cupOk = (x: number, y: number, posts = false) => {
+    const hh = posts ? POSTS.half : half;
+    if (y - hh < t + 4 || y + hh > floorTop - 4 || x - hh < t + 4 || x + hh > W - t - 4) return false;
+    const c = cupAt(x, y, posts);
+    return [...solids, ...mouths].every((s) => !(lateralOverlap(c, s, 6) && zOverlap(c, s)));
+  };
+  // nearest free spot to the usual ⅓-up, centred position; posts if no cup fits
+  const yPref = (H * 2) / 3;
+  let term: { x: number; y: number; kind: 'cup' | 'posts' } | null = null;
+  for (const posts of [false, true]) {
+    if (term) break;
+    if (cupOk(W / 2, yPref, posts)) {
+      term = { x: W / 2, y: yPref, kind: posts ? 'posts' : 'cup' };
+      break;
+    }
+    let bestD = Infinity;
+    for (let y = t; y <= floorTop; y += 5)
+      for (let x = t; x <= W - t; x += 5) {
+        const dd = Math.hypot(x - W / 2, y - yPref);
+        if (dd < bestD && cupOk(x, y, posts)) {
+          bestD = dd;
+          term = { x, y, kind: posts ? 'posts' : 'cup' };
+        }
+      }
+  }
+  if (!term) {
+    term = { x: W / 2, y: Math.min(yPref, floorTop - half - 4), kind: 'cup' };
+    issues.push('No room on the back panel for the speaker terminals clear of the port and drivers.');
+  } else {
+    if (term.kind === 'posts')
+      notes.push('No room on the back for a 75 mm terminal cup beside the port, so it uses a pair of binding posts (two holes, see the back-panel drawing). Seal them with a dab of silicone.');
+    if (Math.hypot(term.x - W / 2, term.y - yPref) > 2)
+      notes.push(
+        `${term.kind === 'posts' ? 'Binding posts' : 'Terminal cup'} moved ${Math.abs(term.x - W / 2) > 2 ? `off-centre (${Math.round(term.x)} mm from the left seen from the front), ` : ''}${Math.round(H - term.y)} mm up from the bottom, so ${term.kind === 'posts' ? 'they clear' : 'it clears'} ${box.deadSpaceMm > 0 && yPref + half > floorTop ? 'the false floor' : 'the port'}.`
+      );
+  }
+  const termY = term.y;
+  const termX = term.x;
+  const termKind = term.kind;
+  solids.push(cupAt(termX, termY, termKind === 'posts'));
+
+  // ---- everything inside the walls, above the false floor, clear of each other ----
+  for (const s of [...solids, ...mouths]) {
+    if (s.group === 'term') continue;
+    if (s.x - s.r < t - 0.5 || s.x + s.r > W - t + 0.5 || s.y - s.r < t - 0.5)
+      issues.push(`${s.label} pokes through a side wall.`);
+    if (s.y + s.r > floorTop + 0.5) issues.push(`${s.label} runs into the ${box.deadSpaceMm > 0 ? 'false floor' : 'bottom panel'}.`);
+  }
+  for (const m of mouths) {
+    if (m.z1 > zIn1 + 0.5 || m.z0 < zIn0 - 0.5)
+      issues.push(`The port's inner end is closer than one diameter (${port?.diameterMm} mm) to the ${m.z1 > zIn1 ? 'back' : 'front'} panel — it would be choked and mis-tuned.`);
+  }
+  const all = [...solids, ...mouths];
+  for (let i = 0; i < all.length; i++)
+    for (let j = i + 1; j < all.length; j++) {
+      const a = all[i];
+      const b = all[j];
+      if (a.group === b.group) continue;
+      if (a.label.startsWith('air') && b.label.startsWith('air')) continue;
+      // parts sharing the baffle are kept apart by the hole layout; check the rest
+      if (lateralOverlap(a, b, 0) && zOverlap(a, b, 0)) issues.push(`${a.label} collides with ${b.label}.`);
+    }
+
+  // ---- window brace: as close to mid-depth as the parts allow ----
+  let braceFromBaffleMm: number | null = null;
+  const wantBrace = box.internalMm.h > 220 || box.internalMm.d > 220;
+  if (wantBrace) {
+    const win = { x0: t + BRACE_FRAME_MM, x1: W - t - BRACE_FRAME_MM, y0: t + BRACE_FRAME_MM, y1: floorTop - BRACE_FRAME_MM };
+    const inWindow = (s: Solid) => s.x - s.r >= win.x0 + 3 && s.x + s.r <= win.x1 - 3 && s.y - s.r >= win.y0 + 3 && s.y + s.r <= win.y1 - 3;
+    const blockers = all.filter((s) => !inWindow(s));
+    const okAt = (b: number) => {
+      const slab = { z0: zIn0 + b, z1: zIn0 + b + t };
+      return blockers.every((s) => !zOverlap(slab, s, 3));
+    };
+    const target = innerD / 2;
+    for (let k = 0; k <= innerD && braceFromBaffleMm === null; k++)
+      for (const b of [target - k, target + k]) if (b >= 15 && b + t <= innerD - 15 && okAt(b)) {
+        braceFromBaffleMm = Math.round(b);
+        break;
+      }
+    if (braceFromBaffleMm === null)
+      notes.push('No window brace: there is no depth where it would clear the drivers and port. Stiffen the panels with glued corner cleats instead.');
+    else if (Math.abs(braceFromBaffleMm - target) > 3)
+      notes.push(`Window brace set ${braceFromBaffleMm} mm behind the baffle (not mid-depth) so the ${blockers.some((s) => s.label.includes('ort')) ? 'port' : 'woofer magnet'} passes clear of its frame.`);
+  }
+
+  return { braceFromBaffleMm, rearPorts, terminalMm: { xMm: termX, yMm: termY, kind: termKind }, issues: [...new Set(issues)], notes, portObstacleMm };
+}
+
+/** standard port tube sizes (inner diameter, mm) */
+export const PORT_TUBES_MM = [35, 41, 51, 64, 76, 89, 102];
+
+/**
+ * Port for a tuning. With no tube given, picks the smallest standard tube that
+ * keeps peak air speed ≤ 17 m/s; otherwise uses the given tube size and count.
+ */
+export function designPort(d: DriverInfo, netL: number, fbHz: number, tubeMm?: number, tubeCount?: number): PortDesign {
   // Required port area for ≤ 17 m/s peak air speed when the cone moves Xmax at fb
   // (conservative: at fb nearly all the volume velocity leaves through the port).
   const vMax = 17;
   const vd = (d.sdCm2 / 1e4) * (d.xmaxMm / 1000); // m³ (peak)
   const spNeed = (2 * Math.PI * fbHz * vd) / vMax; // m²
-  // standard tube sizes (inner diameter, mm)
-  const tubes = [35, 41, 51, 64, 76, 89, 102];
-  let count = 1;
-  let D = tubes.find((x) => Math.PI * (x / 2000) ** 2 >= spNeed);
+  const tubes = PORT_TUBES_MM;
+  let count = tubeCount ?? 1;
+  let D = tubeMm ?? tubes.find((x) => Math.PI * (x / 2000) ** 2 >= spNeed);
   if (!D) {
     count = 2;
     D = tubes.find((x) => 2 * Math.PI * (x / 2000) ** 2 >= spNeed) ?? 102;
@@ -523,18 +871,18 @@ export function cutList(box: BoxDesign, o: BuildOptions, mat: SheetMaterial): Pa
       ],
     });
   }
-  // brace: a window brace at mid depth when panels are large enough to ring
-  if (box.internalMm.h > 220 || box.internalMm.d > 220) {
+  // brace: a window brace (placed by fitInternals) when panels are large enough to ring
+  if (box.braceFromBaffleMm != null) {
     panels.push({
       id: 'brace',
       name: 'Window brace',
       qtyPerBox: 1,
-      lengthMm: H - 2 * t,
+      lengthMm: H - 2 * t - (box.deadSpaceMm > 0 ? box.deadSpaceMm + t : 0),
       widthMm: W - 2 * t,
       thicknessMm: t,
       materialId: mat.id,
       notes: [
-        `Cut a window leaving a 38 mm (1½″) frame; glue at mid-depth (${Math.round(innerD / 2)} mm from the baffle's back face). Ties both sides, top and bottom together.`,
+        `Cut a window leaving a 38 mm (1½″) frame; glue its front face ${box.braceFromBaffleMm} mm behind the baffle's back face${Math.abs(box.braceFromBaffleMm - innerD / 2) <= 3 ? ' (mid-depth)' : ''}. Ties both sides, top and bottom together.`,
         'Make sure the woofer magnet clears it — move it rearward if needed.',
       ],
     });
@@ -738,15 +1086,20 @@ export function panelOperations(box: BoxDesign, panels: Panel[], holes: Hole[], 
       else if (!o.doubleBaffle) list.push('From the inside face, chamfer the back edge of the woofer hole 45° (router chamfer bit or rasp).');
       list.push(`After assembly: round over the front edges, ${(o.roundoverMm / 25.4).toFixed(2)}″ radius.`);
     } else if (p.id === 'back') {
-      list.push('Mark the terminal-cup cut-out ⅓ of the way up, centred; cut with a jigsaw (or two holes for binding posts).');
-      if (box.port && o.portSide === 'rear') list.push(`Port hole Ø${(box.port.diameterMm + 4).toFixed(0)} near the top, centred.`);
+      list.push(
+        box.terminalMm.kind === 'cup'
+          ? `Mark the ${TERMINAL_CUP_MM} mm terminal-cup cut-out centred ${f(box.externalMm.h - box.terminalMm.yMm)} up from the bottom edge${Math.abs(box.terminalMm.xMm - box.externalMm.w / 2) > 2 ? ` and ${f(box.terminalMm.xMm)} from the left (seen from the front)` : ''}; cut with a jigsaw.`
+          : `Drill two binding-post holes (to suit your posts, 19 mm apart) side by side, ${f(box.externalMm.h - box.terminalMm.yMm)} up from the bottom edge${Math.abs(box.terminalMm.xMm - box.externalMm.w / 2) > 2 ? `, ${f(box.terminalMm.xMm)} from the left (seen from the front)` : ', centred'}.`
+      );
+      for (const rp of box.rearPorts)
+        list.push(`Port hole Ø${(box.port!.diameterMm + 4).toFixed(0)}, centre ${f(rp.yMm)} down from the top edge${box.rearPorts.length > 1 ? ` and ${f(rp.xMm)} from the left (seen from the front)` : ', centred'}.`);
       list.push('Pencil "INSIDE" on the inside face.');
     } else if (p.id === 'side') {
       list.push(`Face the best-looking face OUT; mark which edge is FRONT.`);
-      if (hasBrace) list.push(`On the inside face, draw the brace line ${f(innerD / 2)} back from the front edge — the brace's front face goes on that line.`);
+      if (hasBrace) list.push(`On the inside face, draw the brace line ${f(box.braceFromBaffleMm ?? innerD / 2)} back from the front edge — the brace's front face goes on that line.`);
     } else if (p.id === 'topbottom') {
       list.push('Test-fit between the two sides before gluing; plane/sand to a snug push-fit if needed.');
-      if (hasBrace) list.push(`Mark the brace line ${f(innerD / 2)} from the front edge.`);
+      if (hasBrace) list.push(`Mark the brace line ${f(box.braceFromBaffleMm ?? innerD / 2)} from the front edge.`);
     } else if (p.id === 'divider') {
       list.push(`Mark a level line ${f(box.deadSpaceMm)} up from the inside of the bottom panel on both sides — the false floor's underside goes on it.`);
       list.push('Glue it in, then run a bead of glue/caulk around all four edges from above: it must be airtight.');
@@ -848,9 +1201,25 @@ export function makePlan(o0: BuildOptions): BuildPlan {
     driverTweeter: isSingleDriver(o0.arrangement) ? null : o0.driverTweeter,
   };
   const mat = MATERIALS.find((m) => m.id === o.materialId) ?? MATERIALS[0];
-  const box = designBox(o);
+  // design the box, lay out the baffle, check the parts inside fit; if a rear
+  // port has to pass behind a driver, design it again with room for that
+  let box = designBox(o);
+  let holes = baffleHoles(box, o);
+  let fit = fitInternals(box, holes, o);
+  let obstacle = 0;
+  for (let k = 0; k < 4 && fit.portObstacleMm > obstacle; k++) {
+    obstacle = Math.ceil(fit.portObstacleMm);
+    box = designBox(o, obstacle);
+    holes = baffleHoles(box, o);
+    fit = fitInternals(box, holes, o);
+  }
+  box.braceFromBaffleMm = fit.braceFromBaffleMm;
+  box.rearPorts = fit.rearPorts;
+  box.terminalMm = fit.terminalMm;
+  box.fitIssues = fit.issues;
+  box.notes.push(...fit.notes);
+  for (const i of fit.issues) box.warnings.unshift(`⛔ Can't be built as drawn: ${i}`);
   const panels = cutList(box, o, mat);
-  const holes = baffleHoles(box, o);
   const stand = standDesign(box, holes, o, mat);
   const sheets = nestSheets([...panels, ...(stand?.panels ?? [])], o.quantity, mat);
   const jig = jigSettings(holes, box.baffleMm);
@@ -861,7 +1230,7 @@ export function makePlan(o0: BuildOptions): BuildPlan {
   const massKgPerBox = woodKg + (o.driverWoofer.massKg ?? 1.5) + (o.driverTweeter?.massKg ?? 0.4) + 0.4;
 
   const braces = panels.some((p) => p.id === 'brace')
-    ? ['One window brace at mid-depth']
+    ? [`One window brace, ${box.braceFromBaffleMm} mm behind the baffle`]
     : ['Box is small enough that the glued panels are stiff on their own'];
 
   const shopping = shoppingList(o, box, mat, sheets.length);
@@ -1029,8 +1398,10 @@ function buildSteps(o: BuildOptions, box: BoxDesign, panels: Panel[], holes: Hol
       tools: ['Jigsaw or hole saw', 'Drill'],
       skills: [],
       body: [
-        'Cut the terminal-cup hole (use the cup\'s template) or drill two holes for binding posts, about ⅓ of the way up the back.',
-        ...(box.port && o.portSide === 'rear' ? [`Cut the port hole (${fmt(box.port.diameterMm + 4)}) near the top, centred.`] : []),
+        box.terminalMm.kind === 'cup'
+          ? `Cut the terminal-cup hole (use the cup's template), centred ${fmt(box.externalMm.h - box.terminalMm.yMm)} up from the bottom of the back.`
+          : `Drill the two binding-post holes ${fmt(box.externalMm.h - box.terminalMm.yMm)} up from the bottom of the back (no room for a terminal cup beside the port).`,
+        ...box.rearPorts.map((rp) => `Cut the port hole (${fmt(box.port!.diameterMm + 4)}), centre ${fmt(rp.yMm)} down from the top of the back.`),
       ],
     },
     ...(brace
@@ -1067,7 +1438,7 @@ function buildSteps(o: BuildOptions, box: BoxDesign, panels: Panel[], holes: Hol
         'Lay the back panel inside-face up. Glue and stand the two sides on it, then slide top and bottom in between the sides.',
         ...(isMdf ? ['MDF edges drink glue: pre-coat edges with a thin layer, wait 5 minutes, then glue again.'] : []),
         'Brad nails (or a couple of screws in pre-drilled holes) hold parts while you clamp — the glue provides the strength.',
-        ...(brace ? ['Glue the window brace in at mid-depth now, while you can reach.'] : []),
+        ...(brace ? [`Glue the window brace in now (front face ${box.braceFromBaffleMm} mm behind the baffle), while you can reach.`] : []),
         'Clamp, check diagonals, and wipe squeeze-out. Leave 1 hour before unclamping, 24 h before stressing.',
       ],
       check: 'Diagonals equal; open front edges all lie in one plane (lay a straight-edge across).',

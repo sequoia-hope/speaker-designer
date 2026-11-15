@@ -5,7 +5,9 @@ import type { DspOverride, LayoutId } from './system';
 import type { Compass } from './roomShape';
 import { LIVING_ROOM, toAppFrame } from './roomShape';
 import { DEFAULT_OUTDOOR, type OutdoorConfig } from './outdoor';
-import { DEFAULT_PRINTER, HYBRID_PRESETS, type HybridParams, type Printer } from './hybrid';
+import { DEFAULT_PRINTER, HYBRID_PRESETS, PRINTED_DESIGNS, type HybridParams, type Printer } from './hybrid';
+import { setCustomDriverSource, type DriverInfo } from './drivers';
+import type { ModelPin } from './boxModel';
 
 export interface HomeState {
   room: RoomConfig;
@@ -40,14 +42,22 @@ export interface HomeState {
   outdoorMap: 'coverage' | 'bass' | 'image' | 'arrival' | 'interference';
   hybrid: {
     sub: HybridParams;
-    living: HybridParams;
-    edit: 'sub' | 'living';
+    /** printed living-room designs (a tweakable copy of each catalogue entry), by id */
+    designs: Record<string, HybridParams>;
+    /** which printed design is the living-room mains when useLiving is on */
+    livingId: string;
     printer: Printer;
     useOutdoor: boolean;
     useLiving: boolean;
   };
+  /** printed design shown in the Speakers and Build tabs ('sub' or a PRINTED_DESIGNS id); null = the plywood activeDesign */
+  activePrint: string | null;
   stepsDone: Record<string, boolean>;
   roomName: string;
+  /** drivers the user typed in from a datasheet */
+  customDrivers: DriverInfo[];
+  /** designs pinned in the box modeler for side-by-side comparison */
+  modelerPins: ModelPin[];
 }
 
 const KEY = 'speaker-designer.home.v4';
@@ -64,6 +74,20 @@ export const ROOM_PRESETS = [
 
 export function freshDesigns(): Record<string, DesignSettings> {
   return Object.fromEntries(DESIGNS.map((d) => [d.id, { ...d.settings }]));
+}
+
+export function freshPrinted(): Record<string, HybridParams> {
+  return Object.fromEntries(PRINTED_DESIGNS.map((d) => [d.id, structuredClone(d.params)]));
+}
+
+/** The printed design the living-room mains use (when home.hybrid.useLiving). */
+export function livingPrinted(): HybridParams {
+  return home.hybrid.designs[home.hybrid.livingId] ?? home.hybrid.designs[PRINTED_DESIGNS[0].id];
+}
+
+/** Params of a printed design by id ('sub' = the horn sub). */
+export function printedParams(id: string): HybridParams {
+  return id === 'sub' ? home.hybrid.sub : home.hybrid.designs[id] ?? livingPrinted();
 }
 
 export function defaultState(): HomeState {
@@ -100,15 +124,18 @@ export function defaultState(): HomeState {
     venue: 'living',
     outdoor: { ...DEFAULT_OUTDOOR, towerDelayOverride: {} },
     outdoorMap: 'coverage',
+    activePrint: null,
     hybrid: {
       sub: { ...HYBRID_PRESETS.sub },
-      living: { ...HYBRID_PRESETS.living },
-      edit: 'sub',
+      designs: freshPrinted(),
+      livingId: 'mon-sealed',
       printer: { ...DEFAULT_PRINTER },
       useOutdoor: false,
       useLiving: false,
     },
     stepsDone: {},
+    customDrivers: [],
+    modelerPins: [],
   };
 }
 
@@ -139,11 +166,21 @@ function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
         ...d.hybrid,
         ...(s.hybrid ?? {}),
         sub: { ...d.hybrid.sub, ...(s.hybrid?.sub ?? {}) },
-        living: { ...d.hybrid.living, ...(s.hybrid?.living ?? {}) },
+        // older saves had one printed living-room design: it becomes the line tower
+        designs: Object.fromEntries(
+          Object.entries(d.hybrid.designs).map(([id, def]) => {
+            const saved = s.hybrid?.designs?.[id] ?? (id === 'line' ? s.hybrid?.living : undefined);
+            return [id, { ...def, ...(saved ?? {}) }];
+          })
+        ),
+        livingId: s.hybrid?.livingId ?? (s.hybrid?.living ? 'line' : d.hybrid.livingId),
         printer: { ...d.hybrid.printer, ...(s.hybrid?.printer ?? {}) },
       },
       outdoor: { ...d.outdoor, ...(s.outdoor ?? {}), towerDelayOverride: { ...(s.outdoor?.towerDelayOverride ?? {}) } },
       stepsDone: { ...(s.stepsDone ?? {}) },
+      activePrint: typeof s.activePrint === 'string' ? s.activePrint : null,
+      customDrivers: Array.isArray(s.customDrivers) ? s.customDrivers : [],
+      modelerPins: Array.isArray(s.modelerPins) ? s.modelerPins : [],
     };
   } catch {
     return d;
@@ -151,21 +188,37 @@ function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
 }
 
 export const home = $state<HomeState>(load());
+setCustomDriverSource(() => home.customDrivers);
+
+// The state this window last wrote or adopted. Saving the same thing again is a
+// no-op, so adopting another window's state never echoes back to it — even when
+// the two normalise it slightly differently (e.g. an older build in a stale tab),
+// which would otherwise ping-pong between the windows forever.
+let lastSynced = '';
 
 export function saveHome() {
+  const json = JSON.stringify(home);
+  if (json === lastSynced) return;
+  lastSynced = json;
   try {
-    localStorage.setItem(KEY, JSON.stringify(home));
+    localStorage.setItem(KEY, json);
   } catch {
     /* private mode etc. */
   }
 }
 
-// Keep several open browser tabs in step: another tab saved → adopt its state here,
-// so a stale tab can't overwrite newer edits on its next save.
+// Keep several open browser windows in step: another window saved → adopt its
+// edits here, so a stale window can't overwrite newer edits on its next save.
+// Which design each window is *looking at* stays per-window, so two windows
+// showing different speakers don't keep switching each other.
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
-    if (e.key !== KEY || !e.newValue || e.newValue === JSON.stringify(home)) return;
-    Object.assign(home, load(e.newValue));
+    if (e.key !== KEY || !e.newValue || e.newValue === lastSynced) return;
+    const view = { activeDesign: home.activeDesign, activePrint: home.activePrint };
+    const next = load(e.newValue);
+    if (!(view.activeDesign in next.designs)) view.activeDesign = next.activeDesign;
+    Object.assign(home, next, view);
+    lastSynced = JSON.stringify(home);
   });
 }
 

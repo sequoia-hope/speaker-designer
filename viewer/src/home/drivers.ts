@@ -45,6 +45,22 @@ export interface DriverInfo {
   vendor?: 'Parts Express' | 'Madisound';
   partNo?: string;
   buyUrl?: string;
+  /** entered by the user (stored in the browser), not from our catalogue */
+  custom?: boolean;
+}
+
+// Custom drivers live in the persisted home state; homeState registers the
+// source here so pure modules (planning, hybrid) can see them without a cycle.
+let customSource: () => DriverInfo[] = () => [];
+export function setCustomDriverSource(fn: () => DriverInfo[]) {
+  customSource = fn;
+}
+/** Catalogue + user-entered drivers. Reactive when called inside a Svelte derived. */
+export function allDrivers(): DriverInfo[] {
+  return [...DRIVERS, ...customSource()];
+}
+export function findDriver(id: string | undefined): DriverInfo | undefined {
+  return id ? allDrivers().find((d) => d.id === id) : undefined;
 }
 
 export const DRIVERS: DriverInfo[] = [

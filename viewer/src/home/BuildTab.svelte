@@ -6,13 +6,21 @@
   import type { DriverInfo } from './drivers';
   import Speaker3D from './Speaker3D.svelte';
   import PanelDrawing from './PanelDrawing.svelte';
+  import HybridTab from './HybridTab.svelte';
+  import { PRINTED_DESIGNS } from './hybrid';
 
   let { plan, woofer, tweeter, onOpenPrint }: { plan: BuildPlan; woofer: DriverInfo; tweeter: DriverInfo | null; onOpenPrint: (w: 'sub' | 'living') => void } = $props();
+  // one build view for both kinds: plywood designs get the woodworking plan,
+  // printed ones the print plan
   function pick(e: Event) {
     const v = (e.target as HTMLSelectElement).value;
-    if (v === 'print:sub' || v === 'print:living') onOpenPrint(v === 'print:sub' ? 'sub' : 'living');
-    else home.activeDesign = v;
+    if (v.startsWith('print:')) home.activePrint = v.slice(6);
+    else {
+      home.activeDesign = v;
+      home.activePrint = null;
+    }
   }
+  void onOpenPrint;
 
   const cur = $derived(home.designs[home.activeDesign]);
   const box = $derived(plan.box);
@@ -38,6 +46,26 @@
   // drawing scale: 1 svg unit = 1 mm
   const M = 70; // margin for dimension lines
 </script>
+{#snippet picker()}
+  <label class="pick">
+    <span>Building</span>
+    <select value={home.activePrint ? `print:${home.activePrint}` : home.activeDesign} onchange={pick} aria-label="Design to build">
+      <optgroup label="Plywood">
+        {#each DESIGNS as d}<option value={d.id}>{d.name} — {d.short}</option>{/each}
+      </optgroup>
+      <optgroup label="3D-printed + plywood">
+        {#each PRINTED_DESIGNS as pd}<option value={`print:${pd.id}`}>{pd.name} — {pd.short}</option>{/each}
+        <option value="print:sub">Printed horn sub (outdoor)</option>
+      </optgroup>
+    </select>
+  </label>
+{/snippet}
+
+{#if home.activePrint}
+  {#key home.activePrint}
+    <HybridTab id={home.activePrint} mode="build" top={pickerCard} />
+  {/key}
+{:else}
 <div class="split">
 <div class="vis">
   <section class="card vis-card">
@@ -52,29 +80,13 @@
     </div>
     <p class="small muted" style="margin:0">Exploded so you can see every part. Slide to 0 to see it assembled; tap any part for its size and machining steps.</p>
     <div class="s3d-wrap">
-      <Speaker3D {plan} {woofer} {tweeter} initialExplode={0.55} showStand={withStand && !!plan.stand} />
+      <Speaker3D {plan} {woofer} {tweeter} problems={plan.box.fitIssues} initialExplode={0.55} showStand={withStand && !!plan.stand} />
     </div>
   </section>
 </div>
 <div class="side">
 <section class="card">
-  <label class="pick">
-    <span>Building</span>
-    <select value={home.activeDesign} onchange={pick} aria-label="Design to build">
-      <optgroup label="Plywood (this tab)">
-        {#each DESIGNS as d}<option value={d.id}>{d.name} — {d.short}</option>{/each}
-      </optgroup>
-      <optgroup label="3D-printed + plywood hybrids (Print tab)">
-        <option value="print:sub">Printed horn sub (outdoor)</option>
-        <option value="print:living">Printed transmission line / slot port (living room)</option>
-      </optgroup>
-    </select>
-  </label>
-  <div class="printnote">
-    🧩 3D-printed hybrid cabinets have their own tab:
-    <button class="linklike" onclick={() => onOpenPrint('sub')}>printed horn sub</button> ·
-    <button class="linklike" onclick={() => onOpenPrint('living')}>printed living-room speaker</button>
-  </div>
+  {@render picker()}
   <h2>Woodworking plan</h2>
   <p class="sub">
     {cur.quantity} × {box.alignment.kind} box for the {woofer.brand} {woofer.model}{tweeter ? ` + ${tweeter.model}` : ''},
@@ -152,7 +164,7 @@
           <rect x="0" y={t} width={t} height={ext.d - t - box.baffleMm} class="p-side" />
           <rect x={ext.w - t} y={t} width={t} height={ext.d - t - box.baffleMm} class="p-side" />
           {#if plan.panels.some((p) => p.id === 'brace')}
-            <rect x={t} y={t + (ext.d - t - box.baffleMm) / 2 - t / 2} width={ext.w - 2 * t} height={t} class="p-brace" />
+            <rect x={t} y={ext.d - box.baffleMm - (box.braceFromBaffleMm ?? 0) - t} width={ext.w - 2 * t} height={t} class="p-brace" />
           {/if}
           <!-- woofer magnet outline -->
           <rect
@@ -177,8 +189,9 @@
           <rect x={t} y="0" width={ext.w - 2 * t} height={t} class="p-top" />
           <rect x={t} y={ext.h - t} width={ext.w - 2 * t} height={t} class="p-top" />
           {#if plan.panels.some((p) => p.id === 'brace')}
-            <rect x={t} y={t} width={ext.w - 2 * t} height={ext.h - 2 * t} class="p-brace-o" />
-            <rect x={t + 38} y={t + 38} width={ext.w - 2 * t - 76} height={ext.h - 2 * t - 76} class="p-window" />
+            {@const bh = ext.h - 2 * t - (box.deadSpaceMm > 0 ? box.deadSpaceMm + t : 0)}
+            <rect x={t} y={t} width={ext.w - 2 * t} height={bh} class="p-brace-o" />
+            <rect x={t + 38} y={t + 38} width={ext.w - 2 * t - 76} height={bh - 76} class="p-window" />
           {/if}
           <text x={ext.w / 2} y={-14} text-anchor="middle" class="dimtxt">top</text>
         </svg>
@@ -350,6 +363,12 @@
 </section>
 </div>
 </div>
+
+{/if}
+
+{#snippet pickerCard()}
+  <section class="card">{@render picker()}</section>
+{/snippet}
 
 <style>
   .printnote {

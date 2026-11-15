@@ -263,36 +263,51 @@ export function sectionCaps(root: THREE.Object3D, plane: THREE.Plane): THREE.Gro
 
 /** Join unordered 2D segments into closed loops (open chains are dropped). */
 function chainLoops(segs: [THREE.Vector2, THREE.Vector2][]): THREE.Vector2[][] {
-  const q = 1e-6;
-  const key = (p: THREE.Vector2) => `${Math.round(p.x / q)},${Math.round(p.y / q)}`;
-  const adj = new Map<string, number[]>();
-  segs.forEach(([p, r], i) => {
-    for (const k of [key(p), key(r)]) {
-      if (!adj.has(k)) adj.set(k, []);
-      adj.get(k)!.push(i);
+  // weld endpoints within a tolerance (neighbouring hash cells too, so two copies of
+  // one point that straddle a cell boundary still meet), then walk the graph
+  const tol = 2e-6;
+  const cell = 1e-5;
+  const ids: THREE.Vector2[] = [];
+  const grid = new Map<string, number[]>();
+  const idOf = (p: THREE.Vector2) => {
+    const cx = Math.floor(p.x / cell);
+    const cy = Math.floor(p.y / cell);
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (const i of grid.get(`${cx + dx},${cy + dy}`) ?? []) if (ids[i].distanceTo(p) < tol) return i;
+    ids.push(p);
+    const k = `${cx},${cy}`;
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k)!.push(ids.length - 1);
+    return ids.length - 1;
+  };
+  const edges = segs.map(([a, b]) => [idOf(a), idOf(b)] as [number, number]).filter(([a, b]) => a !== b);
+  const adj = new Map<number, number[]>();
+  edges.forEach(([a, b], i) => {
+    for (const v of [a, b]) {
+      if (!adj.has(v)) adj.set(v, []);
+      adj.get(v)!.push(i);
     }
   });
-  const used = new Uint8Array(segs.length);
+  const used = new Uint8Array(edges.length);
   const loops: THREE.Vector2[][] = [];
-  for (let s = 0; s < segs.length; s++) {
-    if (used[s]) continue;
-    used[s] = 1;
-    const start = key(segs[s][0]);
-    const loop = [segs[s][0]];
-    let cur = segs[s][1];
+  for (let e0 = 0; e0 < edges.length; e0++) {
+    if (used[e0]) continue;
+    used[e0] = 1;
+    const start = edges[e0][0];
+    const loop = [ids[start]];
+    let cur = edges[e0][1];
     let closed = false;
-    for (let guard = 0; guard < segs.length; guard++) {
-      const k = key(cur);
-      if (k === start) {
+    for (let guard = 0; guard < edges.length; guard++) {
+      if (cur === start) {
         closed = true;
         break;
       }
-      loop.push(cur);
-      const next = adj.get(k)?.find((i) => !used[i]);
+      loop.push(ids[cur]);
+      const next = adj.get(cur)?.find((i) => !used[i]);
       if (next === undefined) break;
       used[next] = 1;
-      const [p, r] = segs[next];
-      cur = key(p) === k ? r : p;
+      cur = edges[next][0] === cur ? edges[next][1] : edges[next][0];
     }
     if (closed && loop.length >= 3) loops.push(loop);
   }

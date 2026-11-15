@@ -1,31 +1,42 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import * as THREE from 'three';
+  import pc from 'polygon-clipping';
   import { createViewer, sectionCaps, onTap, type Viewer } from './three3d';
   import type { BuildPlan } from './speakerBuild';
+  import { pointInPoly, type HeadGeometry, type PrintedModel, type Pt, type RoundWaveguide } from './hybrid';
   import type { DriverInfo } from './drivers';
   import { fmtInFrac } from './roomAcoustics';
 
   let {
-    plan,
+    plan = null,
+    printed = null,
     woofer,
     tweeter,
     height = '100%',
     initialExplode = 0,
     showStand = false,
+    problems = [],
   }: {
-    plan: BuildPlan;
+    plan?: BuildPlan | null;
+    printed?: PrintedModel | null;
     woofer: DriverInfo;
     tweeter: DriverInfo | null;
     height?: string;
     initialExplode?: number;
     showStand?: boolean;
+    /** reasons this design can't be built as drawn (shown over the view) */
+    problems?: string[];
   } = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let viewer: Viewer | null = null;
   let explode = $state(initialExplode);
   let cutaway = $state(false);
+  /** where the section cuts across the width: 0 = left side, 1 = right side; null = automatic */
+  let cutPos = $state<number | null>(null);
+  /** the automatic position for the current model (centre, or the middle of a printed core) */
+  let autoCut = $state(0.5);
   let showDrivers = $state(true);
   let selected = $state<string | null>(null);
   let framedKey = '';
@@ -38,6 +49,8 @@
   // part metadata for the info card
   const info = $derived.by(() => {
     if (!selected) return null;
+    if (printed) return printedInfo(selected);
+    if (!plan) return null;
     const p = [...plan.panels, ...(plan.stand?.panels ?? [])].find((x) => x.id === selected);
     if (p) {
       const ops = plan.panelOps.find((o) => o.panelId === p.id)?.ops ?? [];
@@ -60,14 +73,17 @@
             lines: [tweeter.blurb],
           }
         : { title: '', size: '', lines: [] },
-      port: plan.box.port
+      port: plan?.box.port
         ? {
             title: 'Port tube',
-            size: `Ø${plan.box.port.diameterMm} mm inside · ${plan.box.port.lengthMm.toFixed(0)} mm long`,
-            lines: [`Tunes the box to ${plan.box.port.fbHz.toFixed(0)} Hz. Keep its inner end ≥ one diameter from any wall.`],
+            size: `Ø${plan!.box.port!.diameterMm} mm inside · ${plan!.box.port!.lengthMm.toFixed(0)} mm long`,
+            lines: [`Tunes the box to ${plan!.box.port!.fbHz.toFixed(0)} Hz. Keep its inner end ≥ one diameter from any wall.`],
           }
         : { title: '', size: '', lines: [] },
-      terminal: { title: 'Terminal cup', size: '', lines: ['Speaker-wire connection. Gasket it — it must be airtight.'] },
+      terminal:
+        plan?.box.terminalMm.kind !== 'posts'
+          ? { title: 'Terminal cup', size: '75 mm square cut-out', lines: ['Speaker-wire connection. Gasket it — it must be airtight.'] }
+          : { title: 'Binding posts', size: 'two holes, 19 mm apart', lines: ['No room for a terminal cup beside the port, so a pair of binding posts. Seal them with a dab of silicone.'] },
     };
     return misc[selected] ?? null;
   });
@@ -106,9 +122,375 @@
     return m;
   }
 
+  // ---------------------------------------------------------------------------
+  // 3D-printed cabinets: profile (depth × height) extruded across the width
+  // ---------------------------------------------------------------------------
+  const PRINT = 0xd4d4d8;
+
+  // Polygon booleans (outline minus chambers, ∩ printed regions, − the driver's wall) are
+  // done with polygon-clipping, which handles holes, splits and notches exactly — no
+  // zero-width seams or slivers for the renderer or the section slicer to trip over.
+  type Ring = [number, number][];
+  const ring = (poly: Pt[]): Ring => [...poly.map(([x, y]) => [x, y] as [number, number]), [poly[0][0], poly[0][1]]];
+  const rectRing = (x0: number, x1: number, y0: number, y1: number): Ring => ring([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+  const open = (r: Ring): Pt[] => r.slice(0, -1).map(([x, y]) => [x, y] as Pt);
+  const area = (poly: Pt[]) => {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i];
+      const q = poly[(i + 1) % poly.length];
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return a / 2;
+  };
+
+  /** Shape (profile mm → m) from an outline and holes, holes kept just inside the outline. */
+  function profileShape(outer: Pt[], holes: Pt[][], s: number) {
+    const sh = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x * s, y * s)));
+    for (const h of holes) {
+      if (h.length < 3 || Math.abs(area(h)) < 4) continue;
+      sh.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x * s, y * s))));
+    }
+    return sh;
+  }
+
+  /** Extrude a profile shape across the width: profile x → depth (z, front at 0), y up, extrusion along x. */
+  function extrudeProfile(shape: THREE.Shape, W: number, x0: number, widthMm: number, m: THREE.Material, id: string) {
+    const s = 0.001;
+    const mesh = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: widthMm * s, bevelEnabled: false, curveSegments: 6 }), m));
+    // shape x → +z, extrusion → −x
+    mesh.rotation.y = -Math.PI / 2;
+    mesh.position.set((x0 + widthMm) * s, 0, -W * s);
+    mesh.userData.partId = id;
+    return mesh;
+  }
+
+  function roundedSquare(w: number, h: number, r: number, s: number) {
+    const sh = new THREE.Shape();
+    const [x0, y0, x1, y1, rr] = [(-w / 2) * s, (-h / 2) * s, (w / 2) * s, (h / 2) * s, r * s];
+    sh.moveTo(x0 + rr, y0);
+    sh.lineTo(x1 - rr, y0);
+    sh.absarc(x1 - rr, y0 + rr, rr, -Math.PI / 2, 0, false);
+    sh.lineTo(x1, y1 - rr);
+    sh.absarc(x1 - rr, y1 - rr, rr, 0, Math.PI / 2, false);
+    sh.lineTo(x0 + rr, y1);
+    sh.absarc(x0 + rr, y1 - rr, rr, Math.PI / 2, Math.PI, false);
+    sh.lineTo(x0, y0 + rr);
+    sh.absarc(x0 + rr, y0 + rr, rr, Math.PI, Math.PI * 1.5, false);
+    return sh;
+  }
+
+  /**
+   * A printed round waveguide (from hybrid.roundWaveguide) with its face at z = faceZ:
+   * flare surface (throat at the back), a thin flange on the face, and the tweeter's
+   * real faceplate + dome sitting flush in the throat recess.
+   */
+  function waveguideGroup(wg: RoundWaveguide, tw: DriverInfo, faceZ: number, id: string): THREE.Group {
+    const s = 0.001;
+    const g = new THREE.Group();
+    const D = wg.depthMm;
+    // a closed section revolved round the axis, so it is a solid (and cuts show plastic):
+    // the flare surface throat → mouth lip, the flange on the face, then a straight conical
+    // outer wall back to the throat. The flare curves outward (convex), so that straight
+    // wall is everywhere at least one wall thickness outside it.
+    const [r0] = wg.profile[0];
+    const sec: [number, number][] = [
+      ...wg.profile,
+      [wg.flangeR, D],
+      [wg.flangeR, D - 3],
+      [wg.R + wg.wallMm, D - 3],
+      [r0 + wg.wallMm, 0],
+      [r0, 0],
+    ];
+    // lathe +y → −z after the flip: y = 0 at the face, y = D at the throat
+    const pts = sec.map(([r, z]) => new THREE.Vector2(r * s, (D - z) * s));
+    const flare = new THREE.Mesh(new THREE.LatheGeometry(pts, 64), mat(PRINT, id, { roughness: 0.5 }));
+    flare.rotation.x = Math.PI / 2;
+    flare.scale.y = -1;
+    flare.position.z = faceZ;
+    g.add(flare);
+    // tweeter at the throat: its faceplate (r0 is the faceplate + 1 mm) flush in the recess
+    const tz = faceZ - D * s;
+    const pr = (tw.frameDiaMm / 2) * s;
+    const plate = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, wg.recessMm * s, 48), mat(0x1c1d21, 'tweeter', { roughness: 0.45 }));
+    plate.rotation.x = Math.PI / 2;
+    plate.position.z = tz - (wg.recessMm / 2) * s;
+    const domeR = Math.min(14, Math.sqrt(tw.sdCm2 / Math.PI) * 10) * s;
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(domeR, 32, 12, 0, Math.PI * 2, 0, Math.PI / 2), mat(0x9ca3af, 'tweeter', { roughness: 0.6 }));
+    dome.rotation.x = Math.PI / 2;
+    dome.position.z = tz;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry((tw.cutoutDiaMm / 2 - 1) * s, (tw.cutoutDiaMm / 2 - 1) * s, (tw.mountDepthMm ?? 35) * s, 40), mat(0x2a2c31, 'tweeter', { metalness: 0.5 }));
+    body.rotation.x = Math.PI / 2;
+    body.position.z = tz - wg.recessMm * s - ((tw.mountDepthMm ?? 35) / 2) * s;
+    for (const m of [plate, dome, body]) {
+      m.userData.partId = 'tweeter';
+      g.add(m);
+    }
+    flare.userData.partId = id;
+    return g;
+  }
+
+  /** Printed tweeter pod: rounded body, optional round waveguide, tweeter, soft pad. */
+  function headGroup(h: HeadGeometry, frontZ: number, topY: number): THREE.Group {
+    const s = 0.001;
+    const g = new THREE.Group();
+    const r = Math.min(h.w, h.h) * 0.32;
+    const wg = h.waveguide;
+    const flareD = wg ? wg.depthMm : 0;
+    const inner = new THREE.Group();
+    // body behind the face; with a waveguide, the front part is a shell round the flare
+    const body = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(roundedSquare(h.w, h.h, r, s), { depth: (h.d - flareD) * s, bevelEnabled: false, curveSegments: 12 }), mat(PRINT, 'head')));
+    body.position.z = frontZ - h.d * s;
+    inner.add(body);
+    if (wg) {
+      const ring = roundedSquare(h.w, h.h, r, s);
+      const hole = new THREE.Path();
+      hole.absarc(0, 0, (wg.R + wg.wallMm) * s, 0, Math.PI * 2, true);
+      ring.holes.push(hole);
+      const shell = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(ring, { depth: flareD * s, bevelEnabled: false, curveSegments: 48 }), mat(PRINT, 'head')));
+      shell.position.z = frontZ - flareD * s;
+      inner.add(shell);
+      inner.add(waveguideGroup(wg, tweeter!, frontZ, 'head'));
+    } else if (tweeter) {
+      const tg = new THREE.Group();
+      tg.position.z = frontZ;
+      addTweeter(tg, tweeter, s, { rebateDepthMm: tweeter.flangeMm ?? 3 });
+      inner.add(tg);
+    }
+    inner.position.y = (3 + h.h / 2) * s;
+    inner.traverse((m) => {
+      if (!m.userData.partId && (m as THREE.Mesh).isMesh) m.userData.partId = 'head';
+    });
+    g.add(inner);
+    const pad = new THREE.Mesh(new THREE.BoxGeometry(h.w * 0.6 * s, 3 * s, h.d * 0.6 * s), mat(0x111111, 'head', { roughness: 0.9 }));
+    pad.position.set(0, 1.5 * s, frontZ - (h.d / 2) * s);
+    pad.userData.partId = 'head';
+    g.add(pad);
+    g.position.y = topY;
+    return g;
+  }
+
+  function buildPrinted(pm: PrintedModel) {
+    if (!viewer) return;
+    const s = 0.001;
+    const g = pm.geo;
+    const p = pm.params;
+    const W = g.W;
+    const H = g.H;
+    const t = g.wallMm;
+    const ex = explode * Math.max(W, g.Etot) * s * 0.9;
+    const root = new THREE.Group();
+    viewer.content.add(root);
+    const speaker = new THREE.Group();
+    root.add(speaker);
+
+    // the wall the woofer is mounted in, cut out of the profile and drawn on its own with a real hole
+    const dv = g.driver;
+    const wx0 = dv.face === 'front' ? W - t : dv.x - t / 2;
+    const wx1 = dv.face === 'front' ? W : dv.x + t / 2;
+    const isAirAt = (x: number, y: number) => !pointInPoly(g.core, x, y) || g.holes.some((h) => pointInPoly(h, x, y));
+    // printed regions: whole profile, or only the end caps for "printed bends + plywood walls"
+    const regions: [number, number][] = g.construction === 'bends' ? g.caps.map((c) => [c.x0, c.x1]) : [[0, W]];
+    const wallCut: Ring = rectRing(wx0, wx1, -1, H + 1);
+    let solid = pc.difference([ring(g.core)], ...g.holes.map((h) => [ring(h)] as Ring[]));
+    solid = pc.intersection(solid, pc.union(...regions.map(([a, b]) => [rectRing(a, b, -1, H + 1)] as Ring[])));
+    solid = pc.difference(solid, [wallCut]);
+    const coreShapes = solid.map((poly) => profileShape(open(poly[0]), poly.slice(1).map(open), s));
+    // dividers: plate outline minus their cut-outs (notch round the drivers, windows through
+    // box chambers) and the driver's wall — nothing left in front of a driver
+    const dividerShapes = pc
+      .difference([ring(plateOutline(W, H))], ...g.dividerCuts.map((c) => [ring(c)] as Ring[]), [wallCut])
+      .map((poly) => profileShape(open(poly[0]), poly.slice(1).map(open), s));
+    const printMat = mat(PRINT, 'core', { roughness: 0.6 });
+    // cores side by side with plywood dividers between; explode spreads them
+    const plate = p.plateMm;
+    const coreX = (c: number) => -g.Etot / 2 + c * (g.coreMm + plate);
+    const spread = (c: number) => (c - (g.cores - 1) / 2) * ex * 0.25 / s;
+    for (let c = 0; c < g.cores; c++) {
+      for (const sh of coreShapes) speaker.add(extrudeProfile(sh, W, coreX(c) + spread(c), g.coreMm, printMat, 'core'));
+      // plywood strips (bends construction), drawn only where they're not inside a printed cap
+      for (const st of g.strips) {
+        if (/Driver baffle/.test(st.name)) continue;
+        let { x0, x1 } = st.rect;
+        for (const cap of g.caps) {
+          if (x0 >= cap.x0 && x0 < cap.x1) x0 = cap.x1;
+          if (x1 > cap.x0 && x1 <= cap.x1) x1 = cap.x0;
+        }
+        if (x1 - x0 < 1) continue;
+        const b = withEdges(new THREE.Mesh(new THREE.BoxGeometry(g.coreMm * s, (st.rect.y1 - st.rect.y0) * s, (x1 - x0) * s), mat(PLY_FACE, 'strip')));
+        b.position.set((coreX(c) + spread(c) + g.coreMm / 2) * s, ((st.rect.y0 + st.rect.y1) / 2) * s, ((x0 + x1) / 2 - W) * s);
+        b.userData.partId = 'strip';
+        speaker.add(b);
+      }
+      if (c < g.cores - 1) {
+        for (const sh of dividerShapes)
+          speaker.add(extrudeProfile(sh, W, coreX(c) + g.coreMm + (spread(c) + spread(c + 1)) / 2, plate, mat(pm.dividerColor ?? PLY_ALT, 'divider'), 'divider'));
+      }
+    }
+    // outer plates
+    for (const side of [-1, 1]) {
+      const x0 = side < 0 ? -g.Etot / 2 - plate + spread(0) - ex / s : g.Etot / 2 + spread(g.cores - 1) + ex / s;
+      speaker.add(extrudeProfile(profileShape(plateOutline(W, H), [], s), W, x0, plate, mat(pm.plateColor, 'plate'), 'plate'));
+    }
+    // the driver's wall, with its hole: the solid stretches of the profile at that depth, full width
+    {
+      const xm = (wx0 + wx1) / 2;
+      const spans: [number, number][] = [];
+      let y0: number | null = null;
+      for (let y = 0; y <= H; y += 1) {
+        const solid = y < H && !isAirAt(xm, y + 0.5);
+        if (solid && y0 === null) y0 = y;
+        if (!solid && y0 !== null) {
+          spans.push([y0, y]);
+          y0 = null;
+        }
+      }
+      const Wt = g.Etot;
+      const wood = dv.face === 'internal' && g.strips.some((st) => /Driver baffle/.test(st.name));
+      for (const [a, b] of spans) {
+        const sh = new THREE.Shape();
+        sh.moveTo((-Wt / 2) * s, a * s);
+        sh.lineTo((Wt / 2) * s, a * s);
+        sh.lineTo((Wt / 2) * s, b * s);
+        sh.lineTo((-Wt / 2) * s, b * s);
+        const cut = (y: number, rMm: number) => {
+          const r = rMm * s;
+          if (y * s - r > a * s && y * s + r < b * s) {
+            const hole = new THREE.Path();
+            hole.absarc(0, y * s, r, 0, Math.PI * 2, true);
+            sh.holes.push(hole);
+          }
+        };
+        cut(dv.y, woofer.cutoutDiaMm / 2);
+        if (g.tweeter && dv.face === 'front') cut(g.tweeter.y, g.tweeter.holeR);
+        const m = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: (wx1 - wx0) * s, bevelEnabled: false, curveSegments: 48 }), mat(wood ? PLY_FACE : PRINT, 'front')));
+        m.position.z = (wx0 - W) * s + (dv.face === 'front' ? ex * 0.6 : 0);
+        m.userData.partId = 'front';
+        speaker.add(m);
+      }
+    }
+    // woofer
+    if (showDrivers) {
+      const wg = new THREE.Group();
+      wg.position.set(0, dv.y * s, (wx1 - W) * s + (dv.face === 'front' ? ex * 1.6 : 0));
+      speaker.add(wg);
+      addWoofer(wg, woofer, s, { rebateDepthMm: null });
+    }
+    // tweeter in the front wall (flush, or in a printed waveguide insert)
+    if (g.tweeter && showDrivers) {
+      const tg = new THREE.Group();
+      tg.position.set(0, g.tweeter.y * s, ex * 1.6);
+      speaker.add(tg);
+      if (g.tweeter.waveguide) tg.add(waveguideGroup(g.tweeter.waveguide, g.tweeter.driver, 0, 'waveguide'));
+      else addTweeter(tg, g.tweeter.driver, s, { rebateDepthMm: null });
+    }
+    // tweeter head on top
+    if (pm.head && showDrivers) speaker.add(headGroup(pm.head, -pm.head.setbackMm * s + ex * 0.4, H * s + ex * 0.5));
+
+    // ground grid
+    const grid = new THREE.GridHelper(Math.max(1.6, W * s * 3), 16, 0x2b3a5c, 0x1a2541);
+    grid.position.set(0, -0.001, -(W * s) / 2);
+    root.add(grid);
+
+    // cut through the middle of the core nearest the centre, so the section shows the profile
+    const cNear = Array.from({ length: g.cores }, (_, c) => c).sort((a, b) => Math.abs(coreX(a) + g.coreMm / 2) - Math.abs(coreX(b) + g.coreMm / 2))[0];
+    const fullW = g.Etot + 2 * plate;
+    autoCut = (coreX(cNear) + g.coreMm / 2 + fullW / 2) / fullW;
+    clip.constant = (-fullW / 2 + (cutPos ?? autoCut) * fullW) * s;
+    if (cutaway) root.add(sectionCaps(root, clip));
+
+    const key = `printed|${W}|${H}|${g.Etot}|${pm.head?.kind ?? ''}`;
+    if (key !== framedKey) {
+      framedKey = key;
+      const b = new THREE.Box3().setFromObject(speaker);
+      viewer.frame(b);
+    }
+    viewer.render();
+  }
+
+  /** Outline of the outer plates / dividers: the profile's bounding box, corners rounded. */
+  function plateOutline(W: number, H: number): Pt[] {
+    const r = Math.min(25, W / 4, H / 4);
+    const out: Pt[] = [];
+    const corners: [number, number, number][] = [
+      [r, r, Math.PI],
+      [W - r, r, -Math.PI / 2],
+      [W - r, H - r, 0],
+      [r, H - r, Math.PI / 2],
+    ];
+    for (const [cx, cy, a0] of corners)
+      for (let i = 0; i <= 6; i++) {
+        const a = a0 + (i / 6) * (Math.PI / 2);
+        out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+      }
+    return out;
+  }
+
+  function printedInfo(id: string): { title: string; size: string; lines: string[] } | null {
+    if (!printed) return null;
+    const g = printed.geo;
+    const p = printed.params;
+    const m = (x: number) => `${Math.round(x)} mm`;
+    const parts: Record<string, { title: string; size: string; lines: string[] }> = {
+      core: {
+        title: `Printed core${g.cores > 1 ? ` (×${g.cores})` : ''}`,
+        size: `${m(g.W)} deep × ${m(g.H)} tall × ${g.coreMm.toFixed(0)} mm thick`,
+        lines: [printed.printSummary, `Walls ${p.wallMm} mm. ${g.construction === 'bends' ? 'Only the curved end caps are printed; the straight walls are plywood strips.' : 'The whole inside shape is printed; cut in half to see it.'}`],
+      },
+      front: {
+        title: g.driver.face === 'front' ? 'Front wall (woofer mount)' : 'Driver baffle',
+        size: `${(g.driver.face === 'front' ? p.wallMm : g.wallMm).toFixed(0)} mm thick · woofer hole Ø${woofer.cutoutDiaMm} mm`,
+        lines: ['Use heat-set M5 inserts (or a printed boss ring) for the woofer screws — plastic threads strip.', 'Seal the woofer with foam gasket tape.'],
+      },
+      plate: {
+        title: 'Side plate (×2)',
+        size: `${m(g.W)} × ${m(g.H)} × ${p.plateMm} mm`,
+        lines: ['Flat outer skin that closes the printed core; corners rounded to match.', 'Glued and through-bolted to the cores.'],
+      },
+      divider: {
+        title: `Plywood divider${g.cores > 2 ? ` (×${g.cores - 1})` : ''}`,
+        size: `${m(g.W)} × ${m(g.H)} × ${p.plateMm} mm`,
+        lines: ['Splits the core into thinner prints and stiffens the walls between the plates.', 'Cut away round the woofer (its basket and magnet pass through) and, in a box chamber, a window leaving a 30 mm frame so the air stays one volume.'],
+      },
+      strip: {
+        title: 'Plywood wall strip',
+        size: `${g.coreMm.toFixed(0)} mm wide · ${p.wallMm} mm thick`,
+        lines: ['A straight wall in plywood, slotted 25 mm into the printed caps at each end. Lengths are in the strip list on the Build tab.'],
+      },
+      waveguide: g.tweeter?.waveguide
+        ? {
+            title: `Printed waveguide insert (${g.tweeter.waveguide.coverageDeg}°)`,
+            size: `Ø${Math.round(2 * g.tweeter.waveguide.flangeR)} mm flange · ${g.tweeter.waveguide.depthMm.toFixed(0)} mm deep · throat Ø${Math.round(2 * g.tweeter.waveguide.r0)} mm`,
+            lines: [
+              `An oblate-spheroid flare with a rolled lip; controls the tweeter's spread down to ≈ ${Math.round(g.tweeter.waveguide.controlHz / 100) * 100} Hz, so cross over around there or above.`,
+              `Printed as one piece; drops into a Ø${Math.round(2 * g.tweeter.holeR)} mm hole in the front wall and is screwed through its flange. The tweeter mounts from behind, its faceplate flush in the throat recess.`,
+            ],
+          }
+        : { title: '', size: '', lines: [] },
+      head: printed.head
+        ? {
+            title: `Tweeter head (${printed.head.kind === 'waveguide' ? 'waveguide pod' : 'round pod'})`,
+            size: `${printed.head.w} × ${printed.head.h} × ${printed.head.d} mm · set back ${printed.head.setbackMm} mm`,
+            lines: printed.head.notes,
+          }
+        : { title: '', size: '', lines: [] },
+    };
+    if (id === 'woofer')
+      return { title: `Woofer — ${woofer.brand} ${woofer.model}`, size: `frame Ø${woofer.frameDiaMm} mm · cut-out Ø${woofer.cutoutDiaMm} mm · ${woofer.mountDepthMm ?? '?'} mm deep`, lines: [woofer.blurb] };
+    if (id === 'tweeter' && tweeter) return { title: `Tweeter — ${tweeter.brand} ${tweeter.model}`, size: `faceplate Ø${tweeter.frameDiaMm} mm · cut-out Ø${tweeter.cutoutDiaMm} mm`, lines: [tweeter.blurb] };
+    return parts[id]?.title ? parts[id] : null;
+  }
+
   function build() {
     if (!viewer) return;
     viewer.clear();
+    if (printed) {
+      buildPrinted(printed);
+      return;
+    }
+    if (!plan) return;
+    autoCut = 0.5;
+    clip.constant = (plan.box.externalMm.w * 0.001) * ((cutPos ?? autoCut) - 0.5);
     const s = 0.001; // mm → m
     const box = plan.box;
     const W = box.externalMm.w * s;
@@ -196,20 +578,63 @@
     // ---- shell ----
     const zf = -bt; // inside face of the baffle
     const zb = -D + t; // inside face of the back
-    speaker.add(panel('back', color2, -W / 2, W / 2, 0, H, -D - ex, -D + t - ex));
+    // back panel with its real cut-outs, at the spots the planner checked for
+    // clearance (fitInternals): terminal cup or binding posts, and rear ports
+    const rearPort = plan.box.rearPorts.length && plan.box.port ? plan.box.port : null;
+    const rearPortXY = plan.box.rearPorts.map((p) => ({ x: p.xMm * s - W / 2, y: H - p.yMm * s }));
+    const term = plan.box.terminalMm;
+    const termX = term.xMm * s - W / 2;
+    const termY = H - term.yMm * s;
+    const termHalf = 0.0375;
+    const postDx = [-0.0095, 0.0095];
+    {
+      const shape = new THREE.Shape();
+      shape.moveTo(-W / 2, 0);
+      shape.lineTo(W / 2, 0);
+      shape.lineTo(W / 2, H);
+      shape.lineTo(-W / 2, H);
+      shape.lineTo(-W / 2, 0);
+      if (term.kind === 'cup') {
+        const cup = new THREE.Path();
+        cup.moveTo(termX - termHalf, termY - termHalf);
+        cup.lineTo(termX - termHalf, termY + termHalf);
+        cup.lineTo(termX + termHalf, termY + termHalf);
+        cup.lineTo(termX + termHalf, termY - termHalf);
+        cup.lineTo(termX - termHalf, termY - termHalf);
+        shape.holes.push(cup);
+      } else {
+        for (const dx of postDx) {
+          const ph = new THREE.Path();
+          ph.absarc(termX + dx, termY, 0.0045, 0, Math.PI * 2, true);
+          shape.holes.push(ph);
+        }
+      }
+      if (rearPort)
+        for (const p of rearPortXY) {
+          const ph = new THREE.Path();
+          ph.absarc(p.x, p.y, ((rearPort.diameterMm + 4) * s) / 2, 0, Math.PI * 2, true);
+          shape.holes.push(ph);
+        }
+      const g = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, curveSegments: 48 });
+      const m = withEdges(new THREE.Mesh(g, mat(color2, 'back')));
+      m.position.z = -D - ex;
+      m.userData.partId = 'back';
+      speaker.add(m);
+    }
     speaker.add(panel('side', color, -W / 2 - ex, -W / 2 + t - ex, 0, H, zb, zf));
-    if (!cutaway) speaker.add(panel('side', color, W / 2 - t + ex, W / 2 + ex, 0, H, zb, zf));
+    speaker.add(panel('side', color, W / 2 - t + ex, W / 2 + ex, 0, H, zb, zf));
     speaker.add(panel('topbottom', color2, -W / 2 + t, W / 2 - t, H - t + ex, H + ex, zb, zf));
     speaker.add(panel('topbottom', color2, -W / 2 + t, W / 2 - t, -ex * 0.4, t - ex * 0.4, zb, zf));
 
     // window brace
-    if (plan.panels.some((p) => p.id === 'brace')) {
-      const innerD = D - bt - t;
-      const z1 = zf - innerD / 2;
+    if (box.braceFromBaffleMm != null) {
+      // front face where the planner put it (clear of magnets and ports)
+      const z1 = zf - box.braceFromBaffleMm * s;
       const shape = new THREE.Shape();
       const x0 = -W / 2 + t;
       const x1 = W / 2 - t;
-      const y0 = t;
+      // above the false floor in a tower
+      const y0 = t + (box.deadSpaceMm > 0 ? box.deadSpaceMm * s + t : 0);
       const y1 = H - t;
       shape.moveTo(x0, y0);
       shape.lineTo(x1, y0);
@@ -239,17 +664,37 @@
       speaker.add(sand);
     }
 
-    // terminal cup on the back
-    const term = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.075, 0.02), mat(0x222631, 'terminal', { roughness: 0.4 }));
-    term.position.set(0, H / 3, -D - ex - 0.002);
-    term.userData.partId = 'terminal';
-    speaker.add(term);
-    for (const dx of [-0.015, 0.015]) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.02, 16), mat(dx < 0 ? 0xdc2626 : 0x111111, 'terminal'));
+    // terminal: a cup (flange outside, body recessed through its hole) or two binding posts
+    const zBack = -D - ex; // outer face of the back
+    const flangeT = 0.003;
+    const termParts: THREE.Mesh[] = [];
+    if (term.kind === 'cup') {
+      const termFlange = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, flangeT), mat(0x222631, 'terminal', { roughness: 0.4 }));
+      termFlange.position.set(termX, termY, zBack - flangeT / 2);
+      const cupDepth = t + 0.012;
+      const termCup = new THREE.Mesh(new THREE.BoxGeometry(termHalf * 2 - 0.002, termHalf * 2 - 0.002, cupDepth), mat(0x1b1e26, 'terminal', { roughness: 0.5 }));
+      termCup.position.set(termX, termY, zBack + cupDepth / 2);
+      termParts.push(termFlange, termCup);
+    }
+    for (const [i, dx] of postDx.entries()) {
+      const red = i === 0;
+      const color = red ? 0xdc2626 : 0x111111;
+      // cup: posts stand on the flange; posts-only: a threaded shank through the panel too
+      const len = term.kind === 'cup' ? 0.02 : 0.02 + t + 0.006;
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(term.kind === 'cup' ? 0.005 : 0.004, term.kind === 'cup' ? 0.005 : 0.004, len, 16), mat(color, 'terminal'));
       post.rotation.x = Math.PI / 2;
-      post.position.set(dx, H / 3, -D - ex - 0.014);
-      post.userData.partId = 'terminal';
-      speaker.add(post);
+      post.position.set(termX + dx * (term.kind === 'cup' ? 1.6 : 1), termY, term.kind === 'cup' ? zBack - flangeT - 0.01 : zBack - 0.02 + len / 2);
+      termParts.push(post);
+      if (term.kind === 'posts') {
+        const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.012, 20), mat(color, 'terminal', { roughness: 0.4 }));
+        knob.rotation.x = Math.PI / 2;
+        knob.position.set(termX + dx, termY, zBack - 0.008);
+        termParts.push(knob);
+      }
+    }
+    for (const m of termParts) {
+      m.userData.partId = 'terminal';
+      speaker.add(m);
     }
 
     // ---- drivers ----
@@ -264,6 +709,15 @@
         else if (h.kind === 'tweeter' && tweeter) addTweeter(g, tweeter, s, h);
         else if (h.kind === 'port' && plan.box.port) addPort(g, plan.box.port.diameterMm * s, plan.box.port.lengthMm * s);
       }
+      if (rearPort)
+        for (const p of rearPortXY) {
+          // flipped so the tube runs from the back panel into the box
+          const g = new THREE.Group();
+          g.position.set(p.x, p.y, -D - ex);
+          g.rotation.y = Math.PI;
+          speaker.add(g);
+          addPort(g, rearPort.diameterMm * s, rearPort.lengthMm * s);
+        }
     }
 
     // ---- stand ----
@@ -372,7 +826,7 @@
     tube.rotation.x = Math.PI / 2;
     tube.position.z = -len / 2;
     const flare = new THREE.Mesh(new THREE.TorusGeometry(dia / 2 + 0.006, 0.006, 10, 40), mat(0x111827, 'port'));
-    flare.position.z = 0.002;
+    flare.position.z = 0.006; // sits on the panel face, not sunk into the wood
     for (const m of [tube, flare]) {
       m.userData.partId = 'port';
       g.add(m);
@@ -394,9 +848,19 @@
     };
   });
 
+  // a different speaker starts with the automatic section again (tweaks to the same one keep it)
+  let cutKey = '';
+  $effect.pre(() => {
+    const k = `${plan?.box.externalMm.w ?? ''}|${printed?.geo.Etot ?? ''}|${printed?.params.type ?? ''}|${printed ? 'p' : 'w'}`;
+    if (k !== cutKey) {
+      cutKey = k;
+      cutPos = null;
+    }
+  });
+
   $effect(() => {
     // rebuild on any input change
-    void [plan, explode, cutaway, showDrivers, selected, showStand, woofer, tweeter];
+    void [plan, printed, explode, cutaway, cutPos, showDrivers, selected, showStand, woofer, tweeter];
     build();
   });
 </script>
@@ -411,6 +875,19 @@
     <button class="chip" class:on={cutaway} onclick={() => (cutaway = !cutaway)}>Cut in half</button>
     <button class="chip" class:on={showDrivers} onclick={() => (showDrivers = !showDrivers)}>Drivers</button>
   </div>
+  {#if cutaway}
+    <label class="ex cutpos">
+      <span>Section</span>
+      <input type="range" min="0.02" max="0.98" step="0.005" value={cutPos ?? autoCut} oninput={(e) => (cutPos = +(e.currentTarget as HTMLInputElement).value)} aria-label="Section position" />
+      <button class="chip" onclick={() => (cutPos = null)} disabled={cutPos === null}>Centre</button>
+    </label>
+  {/if}
+  {#if problems.length}
+    <div class="problems" role="alert">
+      <b>Can't be built as drawn</b>
+      <ul>{#each problems as pr}<li>{pr}</li>{/each}</ul>
+    </div>
+  {/if}
   {#if info}
     <div class="info">
       <button class="x" aria-label="Close part info" onclick={() => (selected = null)}>✕</button>
@@ -505,6 +982,24 @@
     color: var(--text-2);
     font-size: 15px;
     cursor: pointer;
+  }
+  .problems {
+    background: rgba(244, 63, 94, 0.12);
+    border: 1px solid #fb7185;
+    border-radius: 10px;
+    padding: 8px 11px;
+    font-size: 13px;
+    color: #fecdd3;
+  }
+  .problems b {
+    color: #fda4af;
+  }
+  .problems ul {
+    margin: 4px 0 0;
+    padding-left: 16px;
+  }
+  .cutpos .chip:disabled {
+    opacity: 0.5;
   }
   .hint {
     font-size: 12px;

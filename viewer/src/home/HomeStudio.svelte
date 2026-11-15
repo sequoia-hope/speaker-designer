@@ -1,12 +1,13 @@
 <script lang="ts">
   import './home.css';
-  import { home, saveHome } from './homeState.svelte';
+  import { home, livingPrinted, printedParams, saveHome } from './homeState.svelte';
+  import { findDriver } from './drivers';
+  import { printedDesignById, tweeterSetup } from './hybrid';
   import { planFor } from './planning';
   import { designById } from './designs';
   import PartsTab from './PartsTab.svelte';
   import OutdoorTab from './OutdoorTab.svelte';
-  import HybridTab from './HybridTab.svelte';
-  import { hybridLivingAlignment, hybridSubModel } from './hybridModels';
+  import { cabinetDims, hybridLivingAlignment, hybridSubModel } from './hybridModels';
   import { fmtFtIn, fmtFtInFrac } from './roomAcoustics';
   import RoomTab from './RoomTab.svelte';
   import SpeakerTab from './SpeakerTab.svelte';
@@ -16,7 +17,8 @@
   type Tab = 'room' | 'speaker' | 'build' | 'print' | 'parts' | 'learn';
   let { onOpenLab, initialTab = 'room' }: { onOpenLab: () => void; initialTab?: Tab } = $props();
 
-  let tab = $state<Tab>(initialTab);
+  // the old Print tab is now part of Speakers (design) and Build (print plan)
+  let tab = $state<Tab>(initialTab === 'print' ? 'speaker' : initialTab);
 
   // persist every change, whichever tab made it (tabs only save while mounted)
   $effect(() => {
@@ -30,12 +32,14 @@
     history.replaceState(null, '', `#home/${t}`);
     scroller?.scrollTo({ top: 0, behavior: 'instant' });
   }
-  function openPrint(which: 'sub' | 'living') {
-    home.hybrid.edit = which;
-    go('print');
+  /** show a printed design ('sub' or a PRINTED_DESIGNS id; 'living' = the printed mains) */
+  function openPrint(which: string, t: Tab = 'speaker') {
+    home.activePrint = which === 'living' ? home.hybrid.livingId : which;
+    go(t);
   }
   function openDesign(id: string, t: Tab = 'speaker') {
     home.activeDesign = id;
+    home.activePrint = null;
     go(t);
   }
 
@@ -48,13 +52,27 @@
   const activePreset = $derived(designById(home.activeDesign));
   const speakerLabel = $derived(home.hybrid.useLiving ? 'printed hybrid speaker' : (designById(home.system.roles.mains)?.name ?? 'speaker'));
   const hybridSub = $derived(home.hybrid.useOutdoor ? hybridSubModel(home.hybrid.sub) : null);
-  const mainsAlignment = $derived((home.hybrid.useLiving ? hybridLivingAlignment(home.hybrid.living) : null) ?? mains.plan.box.alignment);
+  const mainsAlignment = $derived((home.hybrid.useLiving ? hybridLivingAlignment(livingPrinted()) : null) ?? mains.plan.box.alignment);
+
+  // sidebar: the printed design when one is active
+  const printedSummary = $derived.by(() => {
+    const id = home.activePrint;
+    if (!id) return null;
+    const p = printedParams(id);
+    const w = findDriver(p.driverId);
+    const tw = tweeterSetup(p).tweeter ?? undefined;
+    const dims = cabinetDims(p);
+    return {
+      name: id === 'sub' ? 'Printed horn sub' : (printedDesignById(id)?.name ?? 'Printed speaker'),
+      drivers: `${w?.model ?? ''}${tw ? ` + ${tw.model}` : ''}`,
+      size: `${dims.w} × ${dims.h} × ${dims.d} mm · 3D-printed`,
+    };
+  });
 
   const NAV: { id: Tab; ic: string; label: string; sub: string }[] = [
     { id: 'room', ic: '🛋️', label: 'Room', sub: 'Living room or outdoor' },
     { id: 'speaker', ic: '🔊', label: 'Speakers', sub: 'Designs, in 3D' },
     { id: 'build', ic: '🪚', label: 'Build', sub: 'Drawings, cut list, steps' },
-    { id: 'print', ic: '🧩', label: 'Print', sub: 'Hybrid printed + wood cabinets' },
     { id: 'parts', ic: '🧾', label: 'Parts', sub: 'Bill of materials' },
     { id: 'learn', ic: '📖', label: 'Learn', sub: 'Primer & glossary' },
   ];
@@ -62,8 +80,8 @@
     room: 'Room & sound system',
     speaker: 'Speakers',
     parts: 'Bill of materials',
-    print: 'Hybrid printed cabinets',
-    build: 'Woodworking plan',
+    print: 'Speakers',
+    build: 'Build plan',
     learn: 'Learn',
   };
 </script>
@@ -90,9 +108,15 @@
       <div>{home.roomName}</div>
       <div class="muted small">{fmtFtInFrac(home.room.widthM)} × {fmtFtInFrac(home.room.depthM)}, {fmtFtIn(home.room.heightM)} ceiling</div>
       <div style="margin-top:6px">System: {home.system.layout}</div>
-      <div style="margin-top:6px">Designing: {activePreset?.name}</div>
-      <div class="muted small">{woofer.model}{tweeter ? ` + ${tweeter.model}` : ''}</div>
-      <div class="muted small">{plan.box.externalMm.w} × {plan.box.externalMm.h} × {plan.box.externalMm.d} mm · {plan.box.netVolumeL.toFixed(1)} L</div>
+      {#if printedSummary}
+        <div style="margin-top:6px">Designing: {printedSummary.name}</div>
+        <div class="muted small">{printedSummary.drivers}</div>
+        <div class="muted small">{printedSummary.size}</div>
+      {:else}
+        <div style="margin-top:6px">Designing: {activePreset?.name}</div>
+        <div class="muted small">{woofer.model}{tweeter ? ` + ${tweeter.model}` : ''}</div>
+        <div class="muted small">{plan.box.externalMm.w} × {plan.box.externalMm.h} × {plan.box.externalMm.d} mm · {plan.box.netVolumeL.toFixed(1)} L</div>
+      {/if}
     </div>
     <button class="lab-btn side-lab" onclick={onOpenLab}>Open Acoustics Lab →</button>
   </aside>
@@ -121,8 +145,6 @@
           <SpeakerTab {plan} {woofer} {tweeter} onGoBuild={() => go('build')} onOpenPrint={openPrint} />
         {:else if tab === 'build'}
           <BuildTab {plan} {woofer} {tweeter} onOpenPrint={openPrint} />
-        {:else if tab === 'print'}
-          <HybridTab />
         {:else if tab === 'parts'}
           <PartsTab onOpenDesign={(id: string) => openDesign(id, 'build')} />
         {:else}

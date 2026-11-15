@@ -278,7 +278,7 @@
         {#if subModel}
           Your printed hybrid horn ({(rig.subCab.w * 1000).toFixed(0)} × {(rig.subCab.h * 1000).toFixed(0)} × {(rig.subCab.d * 1000).toFixed(0)} mm), simulated from its geometry, ground-stacked front-centre.
         {:else}
-          Horn-loaded 18″ subs (the Lab's TerraHorn-18, 0.6 × 0.9 × 0.9 m), ground-stacked front-centre. Design your own printed horn in the Print tab.
+          Horn-loaded 18″ subs (the Lab's TerraHorn-18, 0.6 × 0.9 × 0.9 m), ground-stacked front-centre. Design your own printed horn in the Speakers tab (🧩 Printed horn sub).
         {/if}
       </p>
       <div class="chips">

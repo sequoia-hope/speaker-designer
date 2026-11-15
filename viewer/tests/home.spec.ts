@@ -121,32 +121,40 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   await page.getByRole('button', { name: /Living room/ }).first().click();
   await expect(page.getByText('Furniture & zones')).toBeVisible();
 
-  // Print tab: reachable from the Build tab's picker; hybrid printed + wood cabinets
+  // Printed cabinets share the one Build view (picked from the same list)…
   await nav.getByRole('button', { name: /Build/ }).click();
   await page.getByLabel('Design to build').selectOption('print:sub');
   await expect(page.getByRole('heading', { name: 'Printed horn sub' })).toBeVisible();
-  await expect(page.getByText(/Horn path length/)).toBeVisible();
-  await page.getByRole('button', { name: 'Print layout' }).click();
   await expect(page.locator('.stat', { hasText: 'Segments' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Plywood strips (per cabinet)' })).toBeVisible();
+  // …and their design controls live in the Speakers tab, like the plywood ones
+  await nav.getByRole('button', { name: /Speaker/ }).click();
+  await expect(page.getByRole('heading', { name: 'Printed horn sub' })).toBeVisible();
+  await expect(page.getByText(/Horn path length/)).toBeVisible();
   await page.getByRole('button', { name: 'Fully printed core' }).click();
+  await nav.getByRole('button', { name: /Build/ }).click();
   await expect(page.getByRole('heading', { name: 'Plywood strips (per cabinet)' })).toHaveCount(0);
+  await nav.getByRole('button', { name: /Speaker/ }).click();
   await page.getByRole('button', { name: 'Printed bends + plywood walls' }).click();
   // fibre sandwich plates: printed ribs, then a light-wood (balsa) core
   await page.getByRole('button', { name: 'Fibre sandwich plates' }).click();
-  await expect(page.getByText(/Carbon sandwich \(3\+3 plies on 20 mm printed ribs\)/).first()).toBeVisible();
-  await expect(page.getByText(/Skin between ribs/)).toBeVisible();
   await page.locator('.sandwich').getByRole('button', { name: 'Balsa' }).click();
-  await expect(page.getByText(/end-grain balsa core panel/)).toBeVisible();
   await page.getByRole('button', { name: 'Fibreglass skins' }).click();
+  await nav.getByRole('button', { name: /Build/ }).click();
   await expect(page.getByText(/Fibreglass sandwich/).first()).toBeVisible();
-  await page.getByRole('button', { name: 'Assembled' }).click();
+  await expect(page.getByText(/end-grain balsa core panel/)).toBeVisible();
+  await nav.getByRole('button', { name: /Speaker/ }).click();
+  // printed designs use the same 3D viewer as the plywood ones (explode / cut in half)
+  await page.getByRole('button', { name: 'Cut in half' }).click();
   await page.getByLabel('Use this horn for the outdoor subs').check();
-  await page.getByRole('button', { name: /Living-room speaker/ }).click();
-  await expect(page.getByRole('heading', { name: 'Printed transmission line' })).toBeVisible();
-  await page.getByRole('button', { name: 'Folded slot port' }).click();
+  // printed monitors are in the Speakers gallery
+  await page.locator('.gcard', { hasText: 'Printed slot-port monitor' }).click();
+  await expect(page.getByRole('heading', { name: 'Printed slot-port monitor' })).toBeVisible();
   await expect(page.getByText(/Helmholtz tuning/)).toBeVisible();
   await page.getByLabel('Use this speaker as the living-room mains').check();
+  await nav.getByRole('button', { name: /Build/ }).click();
+  await expect(page.getByLabel('Design to build')).toHaveValue('print:mon-slot');
+  await expect(page.getByRole('heading', { name: /Tweeter in the front wall/ })).toBeVisible();
   await nav.getByRole('button', { name: /Room/ }).click();
   await page.getByRole('button', { name: /Outdoor/ }).first().click();
   await expect(page.getByText(/Your printed hybrid horn/)).toBeVisible();

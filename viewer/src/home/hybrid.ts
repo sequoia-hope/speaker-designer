@@ -18,7 +18,7 @@
 // trust it below roughly c / (2 · widest channel).
 
 import { SPEED_OF_SOUND } from './roomAcoustics';
-import type { DriverInfo } from './drivers';
+import { findDriver, type DriverInfo } from './drivers';
 
 const RHO = 1.204;
 const C = SPEED_OF_SOUND;
@@ -74,7 +74,10 @@ export function zRad(areaM2: number, f: number): Cx {
 // ---------------------------------------------------------------------------
 // parameters
 // ---------------------------------------------------------------------------
-export type ProfileType = 'folded-horn' | 'tl' | 'slot-port' | 'waveguide';
+export type ProfileType = 'folded-horn' | 'tl' | 'slot-port' | 'waveguide' | 'sealed';
+/** printed tweeter head on top of a living-room cabinet */
+export type HeadKind = 'none' | 'flat' | 'waveguide';
+export type TweeterMount = 'none' | 'front' | 'pod';
 export type MouthPlace = 'edge' | 'corner';
 
 export type PlateMaterial = 'bb18' | 'mdf19' | 'bb12' | 'sandwich';
@@ -132,6 +135,14 @@ export interface HybridParams {
   /** waveguide: coverage angle (deg) and throat width (mm) */
   coverageDeg: number;
   throatMm: number;
+  /** (older saves) separately printed tweeter head — superseded by tweeterMount + tweeterWaveguide */
+  head?: HeadKind;
+  tweeterId?: string;
+  /** living-room 2-ways: the tweeter in the cabinet's front wall, in a separate printed pod on top, or none */
+  tweeterMount?: TweeterMount;
+  /** a printed round waveguide round the tweeter (an insert in the front wall, or the pod's face) */
+  tweeterWaveguide?: boolean;
+  /** waveguide coverage angle (deg) — also used by the 2D 'waveguide' profile */
 }
 
 export const HYBRID_PRESETS: Record<'sub' | 'living' | 'waveguide', HybridParams> = {
@@ -242,6 +253,11 @@ export interface Geometry {
   /** path along the horn / line / port, start → exit: cumulative length (mm) and area (mm²) */
   path: { s: number[]; area: number[] };
   mouthRect: Rect | null;
+  /** where plywood dividers are cut away (profile coords): a notch round the driver,
+   *  and a window through each box chamber so it stays one volume of air */
+  dividerCuts: Pt[][];
+  /** tweeter mounted in the front wall above the woofer (centre height, hole radius in the wall) */
+  tweeter: { y: number; holeR: number; waveguide: RoundWaveguide | null; driver: DriverInfo } | null;
   chambers: { label: string; volumeL: number }[];
   stats: { label: string; value: string }[];
   fits: boolean;
@@ -352,6 +368,91 @@ function fillet(poly0: Pt[], convexR: (minEdge: number, p: Pt) => number, concav
   return out;
 }
 
+/** Do two segments properly cross (touching ends don't count)? */
+function segsCross(a: Pt, b: Pt, c: Pt, d: Pt) {
+  const o = (p: Pt, q: Pt, r: Pt) => {
+    const v = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    return Math.abs(v) < 1e-9 ? 0 : Math.sign(v);
+  };
+  return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+}
+
+/** Does a polygon's outline cross itself? */
+export function selfIntersects(poly: Pt[]): boolean {
+  const n = poly.length;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      if (segsCross(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n])) return true;
+    }
+  return false;
+}
+
+function polysCross(a: Pt[], b: Pt[]) {
+  for (let i = 0; i < a.length; i++)
+    for (let j = 0; j < b.length; j++) if (segsCross(a[i], a[(i + 1) % a.length], b[j], b[(j + 1) % b.length])) return true;
+  return false;
+}
+
+/**
+ * Fillet, easing the rounding off until the outline doesn't cross itself: rounding is
+ * cosmetic, so where radii would collide (short walls, tight folds) it gives way.
+ */
+function filletSafe(poly: Pt[], convexR: (minEdge: number, p: Pt) => number, concaveR: (minEdge: number, p: Pt) => number): Pt[] {
+  for (const f of [1, 0.75, 0.5, 0.3, 0.15]) {
+    const out = fillet(poly, (m, q) => convexR(m, q) * f, (m, q) => concaveR(m, q) * f);
+    if (!selfIntersects(out)) return out;
+  }
+  return fillet(poly, () => 0, () => 0);
+}
+
+/** A profile that can't exist: crossing outline, chambers breaking out or overlapping. */
+export function profileProblems(core: Pt[], holes: Pt[][]): string[] {
+  const out: string[] = [];
+  if (selfIntersects(core)) out.push('The profile overlaps itself (its walls cross) — the folds don\'t fit in this size: make it bigger or use fewer legs.');
+  holes.forEach((h, i) => {
+    if (selfIntersects(h)) out.push(`A chamber outline crosses itself (chamber ${i + 1}).`);
+    if (polysCross(h, core) || !h.every((q) => pointInPoly(core, q[0], q[1]))) out.push(`A chamber breaks through the outer wall (chamber ${i + 1}).`);
+  });
+  for (let i = 0; i < holes.length; i++)
+    for (let j = i + 1; j < holes.length; j++)
+      if (polysCross(holes[i], holes[j]) || pointInPoly(holes[j], holes[i][0][0], holes[i][0][1]) || pointInPoly(holes[i], holes[j][0][0], holes[j][0][1]))
+        out.push(`Two chambers overlap (${i + 1} and ${j + 1}).`);
+  return out;
+}
+
+/**
+ * Front-mounted parts must sit fully on solid front face (not over a rounded edge, a
+ * port exit or air), their holes inside the printed front, and not on top of each other.
+ */
+export function frontMountProblems(g: Geometry, plateMm: number, woofer: DriverInfo): string[] {
+  const out: string[] = [];
+  const faceX = g.W - 0.5;
+  const solid = (y: number) => y > 0 && y < g.H && pointInPoly(g.core, faceX, y) && !g.holes.some((h) => pointInPoly(h, faceX, y));
+  const faceW = g.Etot + 2 * plateMm;
+  const parts: { name: string; y: number; r: number; hole: number }[] = [];
+  if (g.driver.face === 'front') parts.push({ name: `woofer frame (Ø${woofer.frameDiaMm} mm)`, y: g.driver.y, r: woofer.frameDiaMm / 2, hole: woofer.cutoutDiaMm });
+  if (g.tweeter)
+    parts.push({
+      name: g.tweeter.waveguide ? `waveguide flange (Ø${Math.round(2 * g.tweeter.waveguide.flangeR)} mm)` : `tweeter faceplate (Ø${g.tweeter.driver.frameDiaMm} mm)`,
+      y: g.tweeter.y,
+      r: g.tweeter.waveguide ? g.tweeter.waveguide.flangeR : g.tweeter.driver.frameDiaMm / 2,
+      hole: 2 * g.tweeter.holeR,
+    });
+  for (const q of parts) {
+    if (2 * q.r > faceW + 0.5) out.push(`The ${q.name} is wider than the front (${Math.round(faceW)} mm) — widen the cabinet.`);
+    if (q.hole > g.Etot - 8) out.push(`The hole for the ${q.name.split(' (')[0]} (Ø${Math.round(q.hole)} mm) doesn't fit in the ${Math.round(g.Etot)} mm printed front — widen the cabinet.`);
+    for (let dy = -q.r; dy <= q.r; dy += 1)
+      if (!solid(q.y + dy)) {
+        out.push(`The ${q.name} would hang off the front (${Math.round(Math.abs(dy))} mm ${dy > 0 ? 'above' : 'below'} its centre there's no front face) — taller cabinet or less rounding.`);
+        break;
+      }
+  }
+  if (parts.length === 2 && Math.abs(parts[0].y - parts[1].y) < parts[0].r + parts[1].r)
+    out.push('The woofer and tweeter overlap on the front — taller cabinet, or a smaller waveguide.');
+  return out;
+}
+
 function roundedRect(x0: number, y0: number, x1: number, y1: number, r: number): Pt[] {
   return fillet(
     [
@@ -439,7 +540,153 @@ function seg(s: number[], a: number[], len: number, a0: number, a1: number, n = 
   }
 }
 
+/** Plywood dividers keep this much frame round a chamber window (like a window brace). */
+const DIVIDER_FRAME_MM = 30;
+
+function insetRect(r: Rect, m: number): Rect | null {
+  const o = { x0: r.x0 + m, x1: r.x1 - m, y0: r.y0 + m, y1: r.y1 - m };
+  return o.x1 - o.x0 > 20 && o.y1 - o.y0 > 20 ? o : null;
+}
+
+/** The space a driver's basket and magnet need, as seen in the profile (a divider must be cut away here). */
+function driverCutRect(dv: Geometry['driver'], d: DriverInfo, W: number, t: number): Rect {
+  const md = d.mountDepthMm ?? 80;
+  const r = d.cutoutDiaMm / 2 + 6;
+  return dv.face === 'front'
+    ? { x0: W - t - md - 8, x1: W - t, y0: dv.y - r, y1: dv.y + r }
+    : { x0: dv.x - t / 2 - md - 8, x1: dv.x + t / 2 + 12, y0: dv.y - r, y1: dv.y + r };
+}
+
+/** Thinnest printed wall between a closed chamber and the outside (a corner can break through). */
+function thinnestWall(core: Pt[], holes: Pt[][]): number {
+  const segDist = (p: Pt, a: Pt, b: Pt) => {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const u = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(p[0] - a[0] - u * dx, p[1] - a[1] - u * dy);
+  };
+  let min = Infinity;
+  for (const h of holes)
+    for (const p of h) {
+      if (!pointInPoly(core, p[0], p[1])) return 0;
+      for (let i = 0; i < core.length; i++) min = Math.min(min, segDist(p, core[i], core[(i + 1) % core.length]));
+    }
+  return min;
+}
+
+/** Anything printed inside the woofer's basket / magnet space? (sampled) */
+function basketClearance(core: Pt[], holes: Pt[][], dv: Geometry['driver'], d: DriverInfo, W: number, t: number): string | null {
+  const md = d.mountDepthMm ?? 80;
+  const r = d.cutoutDiaMm / 2 - 1;
+  const air = (x: number, y: number) => !pointInPoly(core, x, y) || holes.some((h) => pointInPoly(h, x, y));
+  const xFace = dv.face === 'front' ? W - t : dv.x - t / 2;
+  for (let dx = 2; dx <= md; dx += 4)
+    for (let dy = -r; dy <= r; dy += 4) {
+      // magnet is narrower than the basket rim
+      const rr = dx > 0.55 * md ? d.frameDiaMm / 4 : r;
+      if (Math.abs(dy) > rr) continue;
+      if (!air(xFace - dx, dv.y + dy))
+        return `The woofer's ${dx > 0.55 * md ? 'magnet' : 'basket'} runs into a printed wall ${Math.round(dx)} mm behind the front — the space behind the driver must be clear for ${md} mm. Make the first channel taller or the cabinet deeper.`;
+    }
+  return null;
+}
+
+/** Is a cylinder behind the front (radius r, from xFace back `depth` mm) clear of print? */
+function cylinderClearance(core: Pt[], holes: Pt[][], xFace: number, depth: number, y: number, r: number, what: string): string | null {
+  const air = (x: number, yy: number) => !pointInPoly(core, x, yy) || holes.some((h) => pointInPoly(h, x, yy));
+  for (let dx = 2; dx <= depth; dx += 4)
+    for (let dy = -r; dy <= r; dy += 4) if (!air(xFace - dx, y + dy)) return `There's printed wall where ${what} needs to go (${Math.round(dx)} mm behind the front) — taller cabinet or a deeper first channel.`;
+  return null;
+}
+
+/** Air a front-mounted tweeter takes out of the box: its body, and a waveguide's flare (L). */
+function tweeterDisplacementL(tw: DriverInfo | null, wg: RoundWaveguide | null): number {
+  if (!tw) return 0;
+  const body = (Math.PI * (tw.cutoutDiaMm / 2) ** 2 * (tw.mountDepthMm ?? 35)) / 1e6;
+  if (!wg) return body;
+  let flare = 0;
+  for (let i = 1; i < wg.profile.length; i++) {
+    const [r0, z0] = wg.profile[i - 1];
+    const [r1, z1] = wg.profile[i];
+    flare += Math.PI * (((r0 + r1) / 2 + wg.wallMm) ** 2) * (z1 - z0);
+  }
+  return body + flare / 1e6;
+}
+
+/** Union of axis-aligned rectangles as outline polygons (for divider cut-outs). */
+export function rectUnion(rects: Rect[]): Pt[][] {
+  if (!rects.length) return [];
+  const xs = [...new Set(rects.flatMap((r) => [r.x0, r.x1]))].sort((a, b) => a - b);
+  const ys = [...new Set(rects.flatMap((r) => [r.y0, r.y1]))].sort((a, b) => a - b);
+  const nx = xs.length - 1;
+  const ny = ys.length - 1;
+  const on = (i: number, j: number) => {
+    if (i < 0 || j < 0 || i >= nx || j >= ny) return false;
+    const cx = (xs[i] + xs[i + 1]) / 2;
+    const cy = (ys[j] + ys[j + 1]) / 2;
+    return rects.some((r) => cx > r.x0 && cx < r.x1 && cy > r.y0 && cy < r.y1);
+  };
+  // directed boundary edges, filled cell on the left (counter-clockwise outlines)
+  const edges = new Map<string, Pt>();
+  const k = (p: Pt) => `${p[0]},${p[1]}`;
+  for (let i = 0; i < nx; i++)
+    for (let j = 0; j < ny; j++) {
+      if (!on(i, j)) continue;
+      const [x0, x1, y0, y1] = [xs[i], xs[i + 1], ys[j], ys[j + 1]];
+      if (!on(i, j - 1)) edges.set(k([x0, y0]), [x1, y0]);
+      if (!on(i + 1, j)) edges.set(k([x1, y0]) + '|' + y1, [x1, y1]);
+      if (!on(i, j + 1)) edges.set(k([x1, y1]) + '|t', [x0, y1]);
+      if (!on(i - 1, j)) edges.set(k([x0, y1]) + '|l', [x0, y0]);
+    }
+  // chain: from each start point, follow the edge leaving the current end point
+  const out = new Map<string, { from: Pt; to: Pt; used: boolean }[]>();
+  for (const [key, to] of edges) {
+    const [a] = key.split('|');
+    const [fx, fy] = a.split(',').map(Number);
+    const from: Pt = [fx, fy];
+    if (!out.has(k(from))) out.set(k(from), []);
+    out.get(k(from))!.push({ from, to, used: false });
+  }
+  const polys: Pt[][] = [];
+  for (const list of out.values())
+    for (const e0 of list) {
+      if (e0.used) continue;
+      const poly: Pt[] = [];
+      let e: { from: Pt; to: Pt; used: boolean } | undefined = e0;
+      while (e && !e.used) {
+        e.used = true;
+        poly.push(e.from);
+        e = out.get(k(e.to))?.find((x) => !x.used);
+      }
+      // drop collinear points
+      const clean = poly.filter((p, i) => {
+        const a = poly[(i - 1 + poly.length) % poly.length];
+        const b = poly[(i + 1) % poly.length];
+        return !((a[0] === p[0] && p[0] === b[0]) || (a[1] === p[1] && p[1] === b[1]));
+      });
+      if (clean.length >= 4) polys.push(clean);
+    }
+  return polys;
+}
+
+/**
+ * The profile for a design, checked: anything that can't physically exist (crossing
+ * walls, a driver hanging off the front, a pod overhanging the top…) marks it unbuildable
+ * with the reason, so it is never offered as a working design.
+ */
 export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
+  const g = buildGeometryRaw(p, d);
+  const problems = [...profileProblems(g.core, g.holes), ...frontMountProblems(g, p.plateMm, d)];
+  const head = headGeometry(p, tweeterSetup(p).tweeter, d);
+  if (head) problems.push(...headProblems(head, g, p));
+  if (problems.length) {
+    g.fits = false;
+    g.warnings.push(...problems.filter((x) => !g.warnings.includes(x)));
+  }
+  return g;
+}
+
+function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
   const W = p.depthMm;
   const H = p.heightMm;
   const Etot = p.extrusionMm;
@@ -461,15 +708,52 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
   const k = Math.max(0, Math.min(1, p.rounding));
   const outerR = 25 * k;
   // solid-corner rounding: wall tips become half-round, lips/outer corners flare, bends sweep
-  let bends = p.construction === 'bends' && p.type !== 'waveguide';
+  let bends = p.construction === 'bends' && p.type !== 'waveguide' && p.type !== 'sealed';
   let capsForFillet: Rect[] = [];
   const inCaps = (P: Pt) => !bends || capsForFillet.some((c) => P[0] >= c.x0 - 0.5 && P[0] <= c.x1 + 0.5 && P[1] >= c.y0 - 0.5 && P[1] <= c.y1 + 0.5);
+  // tweeter in the front wall (living-room 2-ways): its space sits above the woofer
+  const tws = tweeterSetup(p);
+  const frontTw = tws.mount === 'front' && (p.type === 'sealed' || p.type === 'slot-port' || p.type === 'tl') ? tws.tweeter : null;
+  const twWg = frontTw && tws.waveguide ? roundWaveguide(frontTw, p.coverageDeg || 90, Math.max(3, Math.min(t, 6))) : null;
+  /** radius it takes on the face and behind it, and how deep it reaches from the face */
+  const twR = frontTw ? Math.max(twWg ? twWg.flangeR : frontTw.frameDiaMm / 2, twWg ? twWg.R + twWg.wallMm : frontTw.cutoutDiaMm / 2 + 2) : 0;
+  const twDepth = frontTw ? (twWg ? twWg.depthMm : 0) + (frontTw.mountDepthMm ?? 35) : 0;
+  const twStack = frontTw ? 2 * twR + 8 : 0;
+  /** woofer + tweeter centres on the front, inside a vertical span [yb, yt] (tweeter on top) */
+  const placeFront = (yb: number, yt: number) => {
+    const yTw = frontTw ? yt - 8 - twR : null;
+    const yW = frontTw ? yTw! - twR - 8 - dia / 2 : (yb + yt) / 2;
+    return { yTw, yW, fits: yW - dia / 2 >= yb + 2 };
+  };
+  let twY: number | null = null;
+  const driverRef: { d: Geometry['driver'] | null } = { d: null };
   const convex = (minEdge: number, P: Pt) => {
     if (!inCaps(P)) return 0; // plywood corners stay square
     const onOuter = (P[0] < 1 || P[0] > W - 1) && (P[1] < 1 || P[1] > H - 1);
-    return onOuter ? outerR : k * Math.min(t * 1.5, minEdge / 2);
+    // outer corners next to the woofer follow the (smaller) inner fillet, so the wall stays t thick
+    return onOuter ? nearDriver(P, outerR) : nearDriver(P, k * Math.min(t * 1.5, minEdge / 2));
   };
-  const concave = (minEdge: number, P: Pt) => (inCaps(P) ? k * 0.5 * minEdge * 0.95 : 0);
+  const concave0 = (minEdge: number, P: Pt) => (inCaps(P) ? k * 0.5 * minEdge * 0.95 : 0);
+  // never let a fillet grow into the space the woofer's basket and magnet need
+  const mountDepth = d.mountDepthMm ?? 80;
+  const nearDriver = (P: Pt, r: number) => {
+    const dv = driverRef.d;
+    if (!dv) return r;
+    // woofer, and the in-wall tweeter: each a cylinder behind the front
+    // on the front face itself a driver needs its whole frame on flat face, behind it only its cut-out
+    const onFace = P[0] > W - 1;
+    const obs = [
+      { x0: dv.face === 'front' ? W - t - mountDepth - 10 : dv.x - t / 2 - mountDepth - 10, x1: dv.face === 'front' ? W : dv.x + t / 2 + 10, y: dv.y, r: onFace && dv.face === 'front' ? dia / 2 : d.cutoutDiaMm / 2 },
+      ...(twY !== null ? [{ x0: W - twDepth - 10, x1: W, y: twY, r: twR }] : []),
+    ];
+    let out = r;
+    for (const o of obs) {
+      if (P[0] < o.x0 - r || P[0] > o.x1 + r) continue;
+      out = Math.min(out, Math.max(0, Math.abs(P[1] - o.y) - o.r - 2));
+    }
+    return out;
+  };
+  const concave = (minEdge: number, P: Pt) => nearDriver(P, concave0(minEdge, P));
   let gapsUsed: number[] = [];
   let hornInfo: { xDrv: number; tcFront: number; tcBot: number } | null = null;
   let voidTop = 0;
@@ -491,7 +775,7 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     }
     A.push([W, A[A.length - 1][1]]);
     B.push([W, B[B.length - 1][1]]);
-    const core = fillet(coreWithChannel(W, H, A, B), (me, P) => ((P[0] < 1 || P[0] > W - 1) && (P[1] < 1 || P[1] > H - 1) ? outerR : k * Math.min(30, me / 2)), () => 0);
+    const core = filletSafe(coreWithChannel(W, H, A, B), (me, P) => ((P[0] < 1 || P[0] > W - 1) && (P[1] < 1 || P[1] > H - 1) ? outerR : k * Math.min(30, me / 2)), () => 0);
     const mouthW = A[A.length - 1][1] - B[B.length - 1][1];
     const fControl = 25000 / ((mouthW / 1000) * p.coverageDeg);
     stats.push(
@@ -513,6 +797,109 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
       driver: { x: t / 2, y: cy, dia: Math.max(p.throatMm, dia * 0.6), face: 'internal' },
       path: { s: [0, len], area: [p.throatMm * E, mouthW * E] },
       mouthRect: { x0: W - 1, x1: W, y0: cy - mouthW / 2, y1: cy + mouthW / 2 },
+      dividerCuts: [],
+      tweeter: null,
+      chambers,
+      stats,
+      fits,
+      warnings,
+    };
+  }
+
+  if (p.type === 'sealed') {
+    // one rounded chamber; woofer high on the front so it sits close to a tweeter head
+    const r = Math.min(60, (Math.min(W, H) - 2 * t) / 3) * k;
+    const pl = placeFront(t + 2, H - t - 4);
+    const yDrv0 = pl.yW;
+    twY = pl.yTw;
+    if (!pl.fits) {
+      fits = false;
+      warnings.push(`The front is too short for the ${dia} mm woofer${frontTw ? ` and the ${Math.round(2 * twR)} mm tweeter${twWg ? ' waveguide' : ''} above it` : ''} — make the cabinet taller.`);
+    }
+    const topY = twY !== null ? twY + twR : yDrv0 + d.cutoutDiaMm / 2;
+    // big organic corners at the back; at the front only as round as the drivers allow
+    const frontR = Math.max(0, Math.min(r, H - t - topY - 3, yDrv0 - d.cutoutDiaMm / 2 - t - 3));
+    const chamber = filletSafe(
+      [
+        [t, t],
+        [W - t, t],
+        [W - t, H - t],
+        [t, H - t],
+      ],
+      (_me, P) => (P[0] > W / 2 ? frontR : r),
+      () => 0
+    );
+    holes.push(chamber);
+    const backR = Math.min(outerR + r, Math.min(W, H) / 3);
+    // the front corners stay tight enough that the woofer frame / tweeter flange sit on flat face
+    const frameTop = Math.max(yDrv0 + dia / 2, twY !== null ? twY + twR : -Infinity);
+    const faceGap = Math.min(H - frameTop - 2, yDrv0 - dia / 2 - 2);
+    // concentric with the chamber: outer radius = inner radius + wall, so the wall never thins
+    const core = filletSafe(
+      [
+        [0, 0],
+        [W, 0],
+        [W, H],
+        [0, H],
+      ],
+      (_me, P) => (P[0] > W / 2 ? Math.max(0, Math.min(backR, frontR + t, faceGap)) : Math.min(backR, r + t)),
+      () => 0
+    );
+    const Vb = ((W - 2 * t) * (H - 2 * t) * E) / 1e6 - (d.displacementL ?? 0.5) - tweeterDisplacementL(frontTw, twWg);
+    chambers.push({ label: 'Box (net)', volumeL: Vb });
+    spans.push({ x0: t, x1: W - t, y0: t, y1: H - t, label: 'box' });
+    labels.push({ x: W / 2, y: H / 2, text: 'sealed box' });
+    const yDrv = yDrv0;
+    if (E < dia + 6) {
+      fits = false;
+      warnings.push(`The front (${Etot} mm between plates) is narrower than the driver frame (${dia} mm) — widen it.`);
+    }
+    if (W - 2 * t < (d.mountDepthMm ?? 80) + 15) {
+      fits = false;
+      warnings.push(`The box is too shallow for the driver's ${d.mountDepthMm ?? 80} mm mounting depth — make it deeper.`);
+    }
+    {
+      const thin = thinnestWall(core, holes);
+      if (thin < 0.5 * t) {
+        fits = false;
+        warnings.push(`A printed wall gets only ${thin.toFixed(1)} mm thick at a corner — less rounding, or thicker walls.`);
+      }
+      const issue = basketClearance(core, holes, { x: W - t / 2, y: yDrv, dia, face: 'front' }, d, W, t) ?? (twY !== null ? cylinderClearance(core, holes, W - t, twDepth - t, twY, twR - 1, `the tweeter${twWg ? ' waveguide' : ''}`) : null);
+      if (issue) {
+        fits = false;
+        warnings.push(issue);
+      }
+    }
+    if (Vb > 0) {
+      const alpha = d.vasL / Vb;
+      const qtc = d.qts * Math.sqrt(1 + alpha);
+      const fc = d.fsHz * Math.sqrt(1 + alpha);
+      stats.push(
+        { label: 'Net box volume', value: `${Vb.toFixed(1)} L` },
+        { label: 'Qtc / fc', value: `${qtc.toFixed(2)} / ${fc.toFixed(0)} Hz${qtc > 0.85 ? ' — boomy: make the box bigger' : qtc < 0.6 ? ' — lean: smaller box, or EQ' : ''}` }
+      );
+    }
+    return {
+      ...base,
+      construction: 'full',
+      caps: [],
+      strips: [],
+      dead: [],
+      core,
+      holes,
+      spans,
+      labels,
+      driver: { x: W - t / 2, y: yDrv, dia, face: 'front' },
+      path: { s: [0], area: [0] },
+      mouthRect: null,
+      dividerCuts: rectUnion(
+        [
+          driverCutRect({ x: W - t / 2, y: yDrv, dia, face: 'front' }, d, W, t),
+          twY !== null ? { x0: W - t - twDepth - 8, x1: W - t, y0: twY - twR - 6, y1: twY + twR + 6 } : null,
+          insetRect({ x0: t, x1: W - t, y0: t, y1: H - t }, DIVIDER_FRAME_MM),
+        ].filter((r): r is Rect => !!r)
+      ),
+      tweeter: frontTw && twY !== null ? { y: twY, holeR: twWg ? twWg.R + twWg.wallMm : frontTw.cutoutDiaMm / 2, waveguide: twWg, driver: frontTw } : null,
       chambers,
       stats,
       fits,
@@ -531,9 +918,9 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
   let driver: Geometry['driver'];
   let L = 0;
 
-  const stack = (hs: number[]) => {
+  const stack = (hs: number[], top = H - t) => {
     const out: Leg[] = [];
-    let yTop = H - t;
+    let yTop = top;
     for (const h of hs) {
       out.push({ yt: yTop, yb: yTop - h });
       yTop = yTop - h - t;
@@ -598,7 +985,9 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     const tcBot = Math.max(t, drvY - dia / 2);
     const tcFront = xDrv + t + tcD;
     B[0] = [tcFront, legs[0].yb];
-    B.unshift([tcFront, tcBot], [xStart, tcBot]);
+    // down the driver baffle, along the chamber floor, then up its front (this order — the
+    // reverse drew the two walls as a crossing X)
+    B.unshift([xStart, tcBot], [tcFront, tcBot]);
     A[0] = [xStart, legs[0].yt];
     chambers.push({ label: 'Throat chamber', volumeL: (tcD * (tcTop - tcBot) * E) / 1e6 });
     hornInfo = { xDrv, tcFront, tcBot };
@@ -630,12 +1019,15 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     const S0 = Math.max(sd * 1.1, (dia + 12) * E * 0.6);
     const hs = Array.from({ length: N }, (_, i) => (S0 * (1 + (p.taper - 1) * ((i + 0.5) / N))) / E);
     hs[0] = Math.max(hs[0], dia + 2 * t);
-    const room = H - (N + 1) * t;
+    // an in-wall tweeter gets its own small sealed compartment above the line, so the
+    // line's start stays sized for the woofer (1–3× the cone area)
+    const twTop = frontTw ? twStack + t : 0;
+    const room = H - (N + 1) * t - twTop;
     const sumH = hs.reduce((a, b) => a + b, 0);
     // grow the line to use the height, but never wider than ~3× the cone area at the start
     const grow = Math.max(1, Math.min(room / sumH, (3 * sd) / (hs[0] * E)));
     for (let i = 0; i < N; i++) hs[i] *= grow;
-    let used = hs.reduce((a, b) => a + b, 0) + (N + 1) * t;
+    let used = hs.reduce((a, b) => a + b, 0) + (N + 1) * t + twTop;
     const spare = H - used;
     if (spare > 40) {
       // leftover height becomes a sealed void (no filament): fill with sand or shorten the cabinet
@@ -651,11 +1043,31 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
       fits = false;
       warnings.push(`The line needs ${used.toFixed(0)} mm of height but the cabinet is ${H} mm — taller cabinet, fewer legs, thinner walls or more taper.`);
     }
-    legs = stack(hs);
+    legs = stack(hs, H - t - twTop);
+    if (frontTw) {
+      const yb = H - t - twStack;
+      const fr = 3; // front corners: square enough to clear the tweeter
+      holes.push(
+        filletSafe(
+          [
+            [t, yb],
+            [W - t, yb],
+            [W - t, H - t],
+            [t, H - t],
+          ],
+          (_me, P) => (P[0] > W / 2 ? fr : Math.min(30 * k, twStack / 2 - 1)),
+          () => 0
+        )
+      );
+      chambers.push({ label: 'Tweeter compartment (sealed)', volumeL: ((W - 2 * t) * twStack * E) / 1e6 });
+      spans.push({ x0: t, x1: W - t, y0: yb, y1: H - t, label: 'tweeter compartment' });
+      labels.push({ x: W / 2, y: yb + twStack / 2, text: 'tweeter' });
+    }
     const gaps = gapsFor(hs, legLen);
     gapsUsed = gaps;
     ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
     driver = { x: W - t / 2, y: (legs[0].yt + legs[0].yb) / 2, dia, face: 'front' };
+    if (frontTw) twY = H - t - twStack / 2;
     for (let i = 0; i < N; i++) {
       seg(s, area, legLen, hs[i] * E, (i < N - 1 ? hs[i + 1] : hs[i]) * E);
       if (i < N - 1) seg(s, area, bendLen(hs[i], hs[i + 1]) - (gaps[i] + t), hs[i + 1] * E, hs[i + 1] * E, 2);
@@ -677,17 +1089,25 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     xStart = xb;
     const legLen = xb - xa;
     const boxH = H - 2 * t - nSlot * (p.slotMm + t);
-    if (boxH < dia + 2 * t) {
+    if (boxH < dia + 2 * t + twStack) {
       fits = false;
-      warnings.push('Not enough height for the driver above the folded slot — taller cabinet or fewer slot runs.');
+      warnings.push(`Not enough height for the woofer${frontTw ? ' and tweeter' : ''} above the folded slot — taller cabinet or fewer slot runs.`);
     }
     const hs = [Math.max(boxH, 20), ...Array.from({ length: nSlot }, () => p.slotMm)];
     legs = stack(hs);
     const gaps = gapsFor(hs, legLen).map((g, i) => (i === 0 ? Math.min(g, p.slotMm * 1.6) : g));
     gapsUsed = gaps;
     ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
-    driver = { x: W - t / 2, y: (legs[0].yt + legs[0].yb) / 2, dia, face: 'front' };
-    const Vb = (legLen * boxH * E) / 1e6 - (d.displacementL ?? 0.5);
+    {
+      const pl = placeFront(legs[0].yb, legs[0].yt);
+      twY = pl.yTw;
+      if (!pl.fits) {
+        fits = false;
+        warnings.push(`The first channel is too short for the woofer${frontTw ? ' and the tweeter above it' : ''} — taller cabinet or fewer legs.`);
+      }
+      driver = { x: W - t / 2, y: pl.yW, dia, face: 'front' };
+    }
+    const Vb = (legLen * boxH * E) / 1e6 - (d.displacementL ?? 0.5) - tweeterDisplacementL(frontTw, twWg);
     chambers.push({ label: 'Box (net)', volumeL: Vb });
     const Lp = nSlot * legLen + (nSlot - 1) * (bendLen(p.slotMm, p.slotMm) - p.slotMm - t);
     seg(s, area, Lp, p.slotMm * E, p.slotMm * E, 12);
@@ -753,9 +1173,26 @@ export function buildGeometry(p: HybridParams, d: DriverInfo): Geometry {
     }
   }
   capsForFillet = caps;
-  const core = fillet(coreWithChannel(W, H, A, B), convex, concave);
+  driverRef.d = driver!;
+  const core = filletSafe(coreWithChannel(W, H, A, B), convex, concave);
+  // divider cut-outs: notch round the driver, window through the slot-port box / horn rear chamber
+  const cuts: (Rect | null)[] = [driverCutRect(driver!, d, W, t), twY !== null ? { x0: W - t - twDepth - 8, x1: W - t, y0: twY - twR - 6, y1: twY + twR + 6 } : null];
+  if (p.type === 'slot-port' && legs[0]) cuts.push(insetRect({ x0: xa, x1: xb, y0: legs[0].yb, y1: legs[0].yt }, DIVIDER_FRAME_MM));
+  if (hornInfo) cuts.push(insetRect({ x0: t, x1: hornInfo.xDrv, y0: t, y1: H - t }, DIVIDER_FRAME_MM));
+  const thin = thinnestWall(core, holes);
+  if (thin < 0.5 * t) {
+    fits = false;
+    warnings.push(`A printed wall gets only ${thin.toFixed(1)} mm thick where a chamber's corner meets the outside — less rounding, or thicker walls.`);
+  }
+  const clearIssue = basketClearance(core, holes, driver!, d, W, t) ?? (twY !== null ? cylinderClearance(core, holes, W - t, twDepth - t, twY, twR - 1, `the tweeter${twWg ? ' waveguide' : ''}`) : null);
+  if (clearIssue) {
+    fits = false;
+    warnings.push(clearIssue);
+  }
   return {
     ...base,
+    dividerCuts: rectUnion(cuts.filter((r): r is Rect => !!r)),
+    tweeter: frontTw && twY !== null ? { y: twY, holeR: twWg ? twWg.R + twWg.wallMm : frontTw.cutoutDiaMm / 2, waveguide: twWg, driver: frontTw } : null,
     construction: bends ? 'bends' : 'full',
     caps,
     strips,
@@ -882,6 +1319,12 @@ export function simulate(p: HybridParams, d: DriverInfo, g: Geometry, opts: { co
           return add(scl(v, Sd), Uend);
         };
       }
+    } else if (p.type === 'sealed') {
+      // box compliance with light stuffing losses (a small parallel resistance)
+      Zf = zRad(Sd, f);
+      const Vb = (g.chambers[0]?.volumeL ?? 10) / 1000;
+      Zr = inv(cx(1 / ((RHO * C) / Sd * 30), w * (Vb / (RHO * C * C))));
+      out = (v) => scl(v, Sd);
     } else {
       // waveguide: not simulated (see warnings) — sealed-box-like placeholder for completeness
       Zf = zRad(Sd, f);
@@ -1497,3 +1940,252 @@ export function mapResponse(sim1: SimResult, simN: SimResult, band: [number, num
 }
 
 export { sub as cxSub };
+
+
+// ---------------------------------------------------------------------------
+// printed tweeter head (living-room 2-ways)
+// ---------------------------------------------------------------------------
+//
+// The tweeter lives in its own small printed pod on top of the cabinet,
+// decoupled on a soft pad: no woofer-cabinet vibration reaches it, the pod's
+// round edges keep diffraction low, and it can be set back so the tweeter's
+// sound starts in step with the woofer's (time alignment). 'waveguide' heads
+// add a printed round flare around the dome for controlled directivity.
+
+/** Tweeter set-up of a design, reading older saves' `head` field. */
+export function tweeterSetup(p: HybridParams): { mount: TweeterMount; waveguide: boolean; tweeter: DriverInfo | null } {
+  const mount: TweeterMount = p.tweeterMount ?? (p.head === 'flat' || p.head === 'waveguide' ? 'pod' : 'none');
+  const waveguide = p.tweeterWaveguide ?? p.head === 'waveguide';
+  const tweeter = mount === 'none' || p.type === 'waveguide' || p.type === 'folded-horn' ? null : (findDriver(p.tweeterId) ?? null);
+  return { mount: tweeter ? mount : 'none', waveguide, tweeter };
+}
+
+/**
+ * A printed round waveguide for a dome tweeter: an oblate-spheroid flare
+ * r(z) = √(r0² + (z·tan θ)²) from the throat (the tweeter's faceplate sits flush
+ * in a recess there) to the mouth, finished with a rolled lip. Its depth follows
+ * from the coverage angle, so a 90° guide really is 90°.
+ */
+export interface RoundWaveguide {
+  /** throat radius = faceplate radius + clearance (mm) */
+  r0: number;
+  /** mouth radius before the lip, and the outer flange radius on the face (mm) */
+  R: number;
+  flangeR: number;
+  /** flare depth, throat → face (mm), and the faceplate recess at the throat */
+  depthMm: number;
+  recessMm: number;
+  coverageDeg: number;
+  /** below this the guide no longer controls directivity (Keele's rule) */
+  controlHz: number;
+  /** profile from throat (z = 0) to face (z = depth): [radius, z] in mm, radius never shrinking */
+  profile: [number, number][];
+  /** shell wall (mm) */
+  wallMm: number;
+}
+
+export function roundWaveguide(tw: DriverInfo, coverageDeg = 90, wallMm = 4): RoundWaveguide {
+  const r0 = tw.frameDiaMm / 2 + 1;
+  const R = Math.max(80, Math.min(100, r0 + 38));
+  const lip = 8;
+  const th = (Math.min(Math.max(coverageDeg, 60), 130) / 2) * (Math.PI / 180);
+  const zFlare = Math.sqrt(Math.max(R - lip, r0 + 1) ** 2 - r0 * r0) / Math.tan(th);
+  const profile: [number, number][] = [];
+  const N = 24;
+  for (let i = 0; i <= N; i++) {
+    const z = (zFlare * i) / N;
+    profile.push([Math.sqrt(r0 * r0 + (z * Math.tan(th)) ** 2), z]);
+  }
+  // rolled lip: an arc tangent to the wall at the mouth, turning it out flat onto the face.
+  // With α the wall's angle from the axis, dr = lip·sin α dα and dz = lip·cos α dα, so both
+  // radius and depth only ever grow — the flare can't choke or fold back.
+  const [rEnd, zEnd] = profile[profile.length - 1];
+  const phi = Math.atan2((zFlare * Math.tan(th) ** 2) / rEnd, 1); // wall angle from the axis at the mouth
+  for (let i = 1; i <= 8; i++) {
+    const a = phi + ((Math.PI / 2 - phi) * i) / 8;
+    profile.push([rEnd + lip * (Math.cos(phi) - Math.cos(a)), zEnd + lip * (Math.sin(a) - Math.sin(phi))]);
+  }
+  const depth = profile[profile.length - 1][1];
+  const Rm = profile[profile.length - 1][0];
+  return {
+    r0,
+    R: Rm,
+    flangeR: Rm + 10,
+    depthMm: depth,
+    recessMm: tw.flangeMm ?? 4,
+    coverageDeg,
+    controlHz: 25000 / (((2 * Rm) / 1000) * coverageDeg),
+    profile,
+    wallMm,
+  };
+}
+
+/** Problems with a round waveguide (empty = it is a smooth, widening flare the tweeter fits). */
+export function waveguideIssues(wg: RoundWaveguide, tw: DriverInfo): string[] {
+  const out: string[] = [];
+  for (let i = 1; i < wg.profile.length; i++) {
+    if (wg.profile[i][0] < wg.profile[i - 1][0] - 1e-6) out.push(`The flare narrows ${wg.profile[i][1].toFixed(0)} mm from the throat (a choke).`);
+    if (wg.profile[i][1] < wg.profile[i - 1][1] - 1e-6) out.push('The flare folds back on itself (self-intersecting).');
+  }
+  if (wg.r0 < tw.frameDiaMm / 2) out.push(`The throat (Ø${(2 * wg.r0).toFixed(0)} mm) is smaller than the ${tw.model}'s faceplate (Ø${tw.frameDiaMm} mm).`);
+  return [...new Set(out)];
+}
+
+export interface HeadGeometry {
+  kind: 'flat' | 'waveguide';
+  /** outside size (mm): across, tall, front→back */
+  w: number;
+  h: number;
+  d: number;
+  /** how far the head's front sits behind the cabinet front (time alignment) */
+  setbackMm: number;
+  tweeterCutoutMm: number;
+  tweeterFrameMm: number;
+  tweeterDepthMm: number;
+  /** the round waveguide in the pod's face, if any */
+  waveguide: RoundWaveguide | null;
+  /** waveguide mouth diameter (mm); 0 for flat */
+  mouthMm: number;
+  wallMm: number;
+  grams: number;
+  notes: string[];
+}
+
+export function headGeometry(p: HybridParams, tw: DriverInfo | null, woofer: DriverInfo): HeadGeometry | null {
+  const setup = tweeterSetup(p);
+  if (!tw || setup.mount !== 'pod') return null;
+  const wall = Math.max(4, Math.min(p.wallMm, 8));
+  const frame = tw.frameDiaMm;
+  const depthT = tw.mountDepthMm ?? 35;
+  const wg = setup.waveguide ? roundWaveguide(tw, p.coverageDeg || 90, wall) : null;
+  const face = (wg ? 2 * wg.flangeR : frame) + 2 * 14;
+  const w = Math.round(face);
+  const h = Math.round(face);
+  // flare + the tweeter behind its throat + back wall + a little air
+  const d = Math.round((wg ? wg.depthMm : 0) + depthT + 2 * wall + 15);
+  // woofer acoustic centre sits ~ at its voice coil: ≈ 60 % of the mounting depth behind the
+  // baffle; a dome tweeter's is ~ at its flange. A waveguide moves the tweeter back by its depth.
+  const wooferAc = 0.6 * (woofer.mountDepthMm ?? 75);
+  const setback = Math.max(0, Math.round(wooferAc - (wg ? wg.depthMm : 0)));
+  const shellCm3 = (2 * (w * h + w * d + h * d) * wall) / 1000;
+  return {
+    kind: wg ? 'waveguide' : 'flat',
+    w,
+    h,
+    d,
+    setbackMm: setback,
+    tweeterCutoutMm: tw.cutoutDiaMm,
+    tweeterFrameMm: frame,
+    tweeterDepthMm: depthT,
+    waveguide: wg,
+    mouthMm: wg ? Math.round(2 * wg.R) : 0,
+    wallMm: wall,
+    grams: Math.round(shellCm3 * 1.27 * 1.15),
+    notes: [
+      `Printed as one piece, face down, ${w} × ${h} × ${d} mm${wg ? ` with a Ø${Math.round(2 * wg.R)} mm, ${wg.coverageDeg}° round waveguide (${wg.depthMm.toFixed(0)} mm deep; controls directivity down to ≈ ${Math.round(wg.controlHz / 100) * 100} Hz)` : ''}.`,
+      `Sits ${setback} mm back from the cabinet front so the tweeter and woofer sound start together (time alignment) — fine-tune by ear or with a measurement mic.`,
+      'Stands on a 3 mm sorbothane / EPDM pad and is held by one M6 bolt into a heat-set insert in the cabinet top; the tweeter wire runs through a sealed grommet next to it.',
+      'Fill the pod loosely with polyester wool. The tweeter has a closed back, so the pod is just a housing — it needs no particular volume.',
+    ],
+  };
+}
+
+/** A tweeter pod must stand on the flat part of the cabinet top, without overhanging. */
+export function headProblems(h: HeadGeometry, g: Geometry, p: HybridParams): string[] {
+  const out: string[] = [];
+  const topW = g.Etot + 2 * p.plateMm;
+  if (h.w > topW + 0.5) out.push(`The tweeter pod (${h.w} mm wide) overhangs the ${Math.round(topW)} mm cabinet top — a narrower pod (no waveguide) or a wider cabinet.`);
+  if (h.setbackMm + h.d > g.W - 5) out.push(`The tweeter pod (${h.d} mm deep, set back ${h.setbackMm} mm) overhangs the back of the cabinet — a deeper cabinet.`);
+  // its pad needs flat top: sample the profile just under the top across the pad
+  const x0 = g.W - h.setbackMm - h.d * 0.8;
+  const x1 = g.W - h.setbackMm - h.d * 0.2;
+  for (let x = x0; x <= x1; x += 2)
+    if (!pointInPoly(g.core, x, g.H - 0.5)) {
+      out.push('The tweeter pod would sit on the rounded edge of the top, not on flat top — less rounding, or a deeper cabinet.');
+      break;
+    }
+  return out;
+}
+
+/** Printed living-room designs offered in the Speakers gallery. */
+export interface PrintedDesign {
+  id: string;
+  name: string;
+  short: string;
+  blurb: string;
+  difficulty: 1 | 2 | 3;
+  params: HybridParams;
+}
+
+const mon = (o: Partial<HybridParams>): HybridParams => ({
+  ...HYBRID_PRESETS.living,
+  sandwich: { ...DEFAULT_SANDWICH },
+  construction: 'full',
+  rounding: 1,
+  dividers: 0,
+  tweeterMount: 'front',
+  tweeterWaveguide: false,
+  coverageDeg: 90,
+  tweeterId: 'sb26stac-c000-4',
+  ...o,
+});
+
+export const PRINTED_DESIGNS: PrintedDesign[] = [
+  {
+    id: 'mon-sealed',
+    name: 'Printed sealed monitor',
+    short: '6.5″ + 1″ tweeter, sealed',
+    difficulty: 1,
+    blurb:
+      'The simplest printed monitor: one rounded, fully printed shell between two plywood side plates, woofer and tweeter both in its front wall. Sealed = no port to tune and tight, forgiving bass that blends easily with a sub. The easiest place to start printing speakers.',
+    params: mon({ type: 'sealed', driverId: 'sb17nrx2c35-8', heightMm: 330, depthMm: 300, extrusionMm: 210, wallMm: 9, legs: 1, dividers: 1 }),
+  },
+  {
+    id: 'mon-slot',
+    name: 'Printed slot-port monitor',
+    short: '6.5″ + 1″, slot port',
+    difficulty: 2,
+    blurb:
+      'Vented for deeper bass from the same woofer (tuned to ~39 Hz): the port is a wide, flat slot printed into the bottom of the shell with rounded, flared ends — quieter than a round tube, and easy to print. Tweeter above the woofer in the same front.',
+    params: mon({ type: 'slot-port', driverId: 'sb17nrx2c35-8', heightMm: 460, depthMm: 320, extrusionMm: 200, wallMm: 9, legs: 1, slotMm: 22, dividers: 1 }),
+  },
+  {
+    id: 'mon-tl',
+    name: 'Printed mini transmission line',
+    short: '5.25″ six-fold line, 64 cm',
+    difficulty: 3,
+    blurb:
+      'A tapering transmission line folded six times inside a 64 cm stand-mount shell — curved, tapering channels are exactly what printing is good at. Deep, well-damped bass (line tuned below the woofer’s own resonance) for a small 5.25″ woofer; the tweeter has its own small sealed compartment at the top so the line stays the right size.',
+    params: mon({ type: 'tl', driverId: 'dc130a-8', heightMm: 640, depthMm: 300, extrusionMm: 170, wallMm: 6, legs: 6, taper: 0.3 }),
+  },
+  {
+    id: 'mon-wg',
+    name: 'Printed waveguide monitor',
+    short: '6.5″ + waveguide tweeter, sealed',
+    difficulty: 2,
+    blurb:
+      'The sealed monitor with a printed 90° round waveguide around the tweeter, built into the front wall. It narrows the tweeter’s spread to match the woofer’s at the crossover, so the sound reflected from your walls is as smooth as the direct sound — the trick behind many modern studio monitors.',
+    params: mon({ type: 'sealed', driverId: 'sb17nrx2c35-8', heightMm: 420, depthMm: 240, extrusionMm: 200, wallMm: 9, legs: 1, dividers: 1, tweeterWaveguide: true }),
+  },
+  {
+    id: 'line',
+    name: 'Printed line tower',
+    short: '6.5″ transmission line, floor-standing',
+    difficulty: 3,
+    blurb: 'The original printed living-room speaker: a tall six-leg transmission line for deep bass without a sub. Woofer only — add a tweeter in its front or in a pod on top.',
+    params: { ...HYBRID_PRESETS.living, sandwich: { ...DEFAULT_SANDWICH } },
+  },
+];
+export const printedDesignById = (id: string) => PRINTED_DESIGNS.find((d) => d.id === id);
+
+/** What the 3D viewer needs to draw a printed cabinet. */
+export interface PrintedModel {
+  geo: Geometry;
+  params: HybridParams;
+  head: HeadGeometry | null;
+  plateColor: number;
+  /** sandwich dividers match the plates; otherwise plywood */
+  dividerColor?: number;
+  /** one line about the print (pieces, filament, hours) for the part info */
+  printSummary: string;
+}

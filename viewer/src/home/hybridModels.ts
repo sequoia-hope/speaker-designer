@@ -1,11 +1,11 @@
 // Turn a printed hybrid design into models the maps can use.
-import { DRIVERS } from './drivers';
+import { DRIVERS, findDriver } from './drivers';
 import { buildGeometry, mapResponse, simulate, type HybridParams } from './hybrid';
 import type { SubModel } from './outdoor';
 import type { BoxAlignment } from './roomAcoustics';
 
 export function driverFor(p: HybridParams) {
-  return DRIVERS.find((d) => d.id === p.driverId) ?? DRIVERS.find((d) => d.role === (p.type === 'folded-horn' ? 'pa' : 'woofer'))!;
+  return findDriver(p.driverId) ?? DRIVERS.find((d) => d.role === (p.type === 'folded-horn' ? 'pa' : 'woofer'))!;
 }
 
 export function cabinetDims(p: HybridParams) {
@@ -30,9 +30,9 @@ export function hybridSubModel(p: HybridParams): SubModel | null {
   };
 }
 
-/** Living-room alignment (bass response) from a printed TL / slot-port design. */
+/** Living-room alignment (bass response) from a printed sealed / TL / slot-port design. */
 export function hybridLivingAlignment(p: HybridParams): BoxAlignment | null {
-  if (p.type !== 'tl' && p.type !== 'slot-port') return null;
+  if (p.type !== 'tl' && p.type !== 'slot-port' && p.type !== 'sealed') return null;
   const d = driverFor(p);
   const g = buildGeometry(p, d);
   const sim = simulate(p, d, g, { coupled: 1, floor: false, f0: 15, f1: 600, n: 90 });

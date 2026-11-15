@@ -1,13 +1,23 @@
 <script lang="ts">
   import MiniChart from './MiniChart.svelte';
-  import Hybrid3D from './Hybrid3D.svelte';
-  import { home, saveHome } from './homeState.svelte';
-  import { DRIVERS } from './drivers';
-  import { buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, planPanels, planPrint, plateProps, plateThickness, sandwichPlate, simulate, SKINS, WOOD_CORES, type PlateMaterial, type ProfileType, type SandwichCore } from './hybrid';
+  import Speaker3D from './Speaker3D.svelte';
+  import type { Snippet } from 'svelte';
+  import { home, printedParams, saveHome } from './homeState.svelte';
+  import { allDrivers, findDriver } from './drivers';
+  import { buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
   import { cabinetDims, driverFor } from './hybridModels';
 
-  const isSub = $derived(home.hybrid.edit === 'sub');
-  const p = $derived(isSub ? home.hybrid.sub : home.hybrid.living);
+  // One printed design ('sub' or a PRINTED_DESIGNS id), shown either as a design
+  // (Speakers tab: shape, driver, response) or as a build (Build tab: print plan).
+  let { id, mode, top }: { id: string; mode: 'design' | 'build'; top?: Snippet } = $props();
+  const isSub = $derived(id === 'sub');
+  const p = $derived(printedParams(id));
+  const entry = $derived(printedDesignById(id));
+  const tw = $derived(tweeterSetup(p));
+  const tweeter = $derived(isSub ? null : tw.tweeter);
+  const twWg = $derived(tw.tweeter && tw.waveguide ? roundWaveguide(tw.tweeter, p.coverageDeg || 90) : null);
+  const head = $derived(isSub ? null : headGeometry(p, tweeter, driverFor(p)));
+  const tweeters = $derived(allDrivers().filter((x) => x.role === 'tweeter'));
   const d = $derived(driverFor(p));
   const geo = $derived(buildGeometry(p, d));
   const plan = $derived(planPrint(geo, home.hybrid.printer));
@@ -53,14 +63,31 @@
     saveHome();
   });
 
-  let view = $state<'section' | '3d' | 'print'>('section');
-  let showCoupled = $state(false);
 
-  const drivers = $derived(DRIVERS.filter((x) => (isSub ? x.role === 'pa' || x.role === 'sub' : x.role === 'woofer' || (p.type === 'waveguide' && x.role === 'tweeter'))));
+  const drivers = $derived(allDrivers().filter((x) => (isSub ? x.role === 'pa' || x.role === 'sub' : x.role === 'woofer' || (p.type === 'waveguide' && x.role === 'tweeter'))));
   function setType(t: ProfileType) {
-    const base = t === 'waveguide' ? HYBRID_PRESETS.waveguide : HYBRID_PRESETS.living;
-    home.hybrid.living = { ...base, type: t, ...(t === 'slot-port' ? { heightMm: 420, depthMm: 300, legs: 2, slotMm: 35 } : {}) };
+    // start the new profile from the catalogue design of that type (keeps the tweeter head)
+    const like = { sealed: 'mon-sealed', 'slot-port': 'mon-slot', tl: 'mon-tl' }[t as string];
+    const base = t === 'waveguide' ? HYBRID_PRESETS.waveguide : (printedDesignById(like ?? 'line')?.params ?? HYBRID_PRESETS.living);
+    const keep = tweeterSetup(p);
+    home.hybrid.designs[id] = {
+      ...structuredClone(base),
+      type: t,
+      head: undefined,
+      tweeterMount: t === 'waveguide' ? 'none' : keep.mount === 'none' ? (base.tweeterMount ?? 'none') : keep.mount,
+      tweeterWaveguide: keep.waveguide,
+      tweeterId: p.tweeterId ?? base.tweeterId,
+    };
   }
+  const model = $derived<PrintedModel>({
+    geo,
+    params: p,
+    head,
+    plateColor,
+    dividerColor: p.plateMaterial === 'sandwich' ? plateColor : undefined,
+    printSummary: `${plan.segments.length} printed pieces, ≈ ${(plan.totalGrams / 1000).toFixed(1)} kg of filament, ~${plan.hours.toFixed(0)} h — the print plan is on the Build tab.`,
+  });
+  const title = $derived(isSub ? 'Printed horn sub' : (entry?.name ?? 'Printed speaker'));
   const COLORS = ['#38bdf8', '#34d399', '#f472b6'];
   const sc = $derived(Math.min(1, 520 / Math.max(geo.W, geo.H)));
   const mm = (v: number) => `${Math.round(v)} mm`;
@@ -70,105 +97,68 @@
 <div class="split">
   <div class="vis">
     <section class="card vis-card">
-      <div class="vis-hd">
-        <h2>{isSub ? 'Printed horn sub' : p.type === 'tl' ? 'Printed transmission line' : p.type === 'slot-port' ? 'Printed slot-port box' : 'Printed waveguide'}</h2>
-        <div class="seg">
-          <button class:on={view === 'section'} onclick={() => (view = 'section')}>Cross-section</button>
-          <button class:on={view === '3d'} onclick={() => (view = '3d')}>Assembled</button>
-          <button class:on={view === 'print'} onclick={() => (view = 'print')}>Print layout</button>
-        </div>
-      </div>
+      <div class="vis-hd"><h2>{title}</h2></div>
       <div class="dimline">
-        {mm(dims.w)} W × {mm(dims.h)} H × {mm(dims.d)} D ({inch(dims.w)} × {inch(dims.h)} × {inch(dims.d)}) · {geo.cores > 1 ? `${geo.cores} printed cores of ${geo.coreMm.toFixed(0)} mm with ${geo.cores - 1} divider${geo.cores > 2 ? 's' : ''}` : `core ${geo.coreMm.toFixed(0)} mm thick`} between two {p.plateMm} mm plates
+        {mm(dims.w)} W × {mm(dims.h)} H × {mm(dims.d)} D ({inch(dims.w)} × {inch(dims.h)} × {inch(dims.d)}){head ? ` + ${head.h} mm tweeter pod` : ''} · {geo.cores > 1 ? `${geo.cores} printed cores of ${geo.coreMm.toFixed(0)} mm with ${geo.cores - 1} divider${geo.cores > 2 ? 's' : ''}` : `core ${geo.coreMm.toFixed(0)} mm thick`} between two {p.plateMm} mm plates
       </div>
-      {#if view === 'section'}
-        <div class="svg-wrap sect">
-          <svg viewBox={`-60 -40 ${geo.W + 120} ${geo.H + 90}`} role="img" aria-label="Cross-section">
-            <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
-              <path d={solidPath} class="print" fill-rule="evenodd" />
-              {#each geo.dead as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="deadsp" />{/each}
-              {#each geo.strips as st}<rect x={st.rect.x0} y={st.rect.y0} width={st.rect.x1 - st.rect.x0} height={st.rect.y1 - st.rect.y0} class="ply" />{/each}
-              {#each geo.caps as c}<rect x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} class="capline" />{/each}
-              {#if geo.mouthRect}<rect x={geo.mouthRect.x0 - 4} y={geo.mouthRect.y0} width="8" height={geo.mouthRect.y1 - geo.mouthRect.y0} class="mouth" />{/if}
-              <!-- driver -->
-              <rect x={geo.driver.x - 6} y={geo.driver.y - geo.driver.dia / 2} width="12" height={geo.driver.dia} class="drv" />
-              <path d={`M ${geo.driver.x} ${geo.driver.y - geo.driver.dia * 0.45} L ${geo.driver.x + (geo.driver.face === 'front' ? -1 : 1) * geo.driver.dia * 0.28} ${geo.driver.y} L ${geo.driver.x} ${geo.driver.y + geo.driver.dia * 0.45}`} class="cone" />
-            </g>
-            {#each geo.labels as l}
-              <text x={l.x} y={geo.H - l.y + 5} text-anchor="middle" class="lbl">{l.text}</text>
-            {/each}
-            <text x={geo.W + 8} y={geo.H - ((geo.mouthRect?.y0 ?? 0) + (geo.mouthRect?.y1 ?? 0)) / 2} class="lbl mouthlbl">{isSub ? 'mouth →' : p.type === 'waveguide' ? 'mouth →' : 'exit →'}</text>
-            <line x1="0" y1={geo.H + 22} x2={geo.W} y2={geo.H + 22} class="dim" />
-            <text x={geo.W / 2} y={geo.H + 42} text-anchor="middle" class="dimtxt">{mm(geo.W)} (depth, back → front)</text>
-            <line x1="-22" y1="0" x2="-22" y2={geo.H} class="dim" />
-            <text x="-30" y={geo.H / 2} text-anchor="middle" class="dimtxt" transform={`rotate(-90 -30 ${geo.H / 2})`}>{mm(geo.H)}</text>
-          </svg>
-        </div>
-        <p class="small muted">Grey = printed plastic, dark = air. This profile is extruded {geo.coreMm.toFixed(0)} mm (into the screen){geo.cores > 1 ? ` as ${geo.cores} cores separated by ${geo.cores - 1} plywood divider${geo.cores > 2 ? 's' : ''}` : ''} and closed on both sides by the wooden plates. Bends sweep round, wall tips are half-round and the mouth lips roll out — the shapes 3D printing makes easy.</p>
-      {:else if view === '3d'}
-        <div class="vis-3d">
-          <Hybrid3D {geo} {plan} plateMm={p.plateMm} {plateColor} dividerColor={p.plateMaterial === 'sandwich' ? plateColor : undefined} coupled={showCoupled && isSub ? (p.mouth === 'corner' ? 4 : 2) : 1} mouth={p.mouth} />
-        </div>
-        {#if isSub}
-          <label class="toggle"><input type="checkbox" bind:checked={showCoupled} /> Show {p.mouth === 'corner' ? '4 cabinets (2 × 2)' : '2 cabinets'} coupled into one mouth</label>
-        {/if}
-      {:else}
-        <div class="svg-wrap sect">
-          <svg viewBox={`-30 -30 ${geo.W + 60} ${geo.H + 60}`} role="img" aria-label="Print layout">
-            <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
-              <path d={solidPath} class="print" fill-rule="evenodd" />
-              {#each geo.dead as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="deadsp" />{/each}
-              {#each geo.strips as st}<rect x={st.rect.x0} y={st.rect.y0} width={st.rect.x1 - st.rect.x0} height={st.rect.y1 - st.rect.y0} class="ply" />{/each}
-              {#each geo.caps as c}<rect x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} class="capline" />{/each}
-              {#each plan.cutLines as c}<line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} class="cut" />{/each}
-              {#each plan.keys as k}<rect x={k.x - 6} y={k.y - 6} width="12" height="12" class="key" transform={`rotate(45 ${k.x} ${k.y})`} />{/each}
-            </g>
-            {#each plan.segments.filter((sg) => sg.z0 === 0 && sg.core === 0) as sg}
-              <text x={(sg.x0 + sg.x1) / 2} y={geo.H - (sg.y0 + sg.y1) / 2} text-anchor="middle" class="seglbl">{sg.tile}</text>
-            {/each}
-          </svg>
-        </div>
-        <p class="small muted">
-          {geo.construction === 'bends' ? 'Only the yellow-outlined end-caps are printed; wood-coloured parts are plywood. ' : ''}Red dashed = cut lines (placed through walls where possible); ◆ = alignment keys. Printed flat (profile on the bed){plan.rotated ? ', rotated 90° to fit' : ''}, the extrusion grows upward
-          {#if plan.cutsZ.length}in {plan.cutsZ.length + 1} layers of ≤ {home.hybrid.printer.maxZ} mm{/if}.
-        </p>
-        <div class="beds">
-          {#each plan.segments.filter((sg) => sg.z0 === 0 && sg.core === 0) as sg}
-            <div class="bed">
-              <svg viewBox={`0 0 ${home.hybrid.printer.bedX} ${home.hybrid.printer.bedY}`}>
-                <rect x="0" y="0" width={home.hybrid.printer.bedX} height={home.hybrid.printer.bedY} class="bedrect" />
-                <rect x={home.hybrid.printer.margin} y={home.hybrid.printer.margin} width={home.hybrid.printer.bedX - 2 * home.hybrid.printer.margin} height={home.hybrid.printer.bedY - 2 * home.hybrid.printer.margin} class="bedmargin" />
-                <rect x={home.hybrid.printer.margin} y={home.hybrid.printer.margin} width={sg.bedW} height={sg.bedH} class="part" />
-              </svg>
-              <span>{sg.tile} · {Math.round(sg.bedW)}×{Math.round(sg.bedH)}</span>
-            </div>
-          {/each}
-        </div>
-      {/if}
+      <div class="s3d-wrap">
+        <Speaker3D printed={model} woofer={d} {tweeter} initialExplode={mode === 'build' ? 0.55 : 0} problems={geo.fits ? [] : geo.warnings} />
+      </div>
     </section>
   </div>
 
   <div class="side">
+    {@render top?.()}
+    {#if mode === 'design'}
     <section class="card">
-      <h2>Hybrid printed + wood cabinet</h2>
-      <p class="sub">A 3D-printed core carries the complicated inside (horn folds, line, port, waveguide); two flat plywood plates close it off. Big flat surfaces are wood, complex shapes are plastic.</p>
-      <div class="seg">
-        <button class:on={isSub} onclick={() => (home.hybrid.edit = 'sub')}>🌲 Outdoor horn sub</button>
-        <button class:on={!isSub} onclick={() => (home.hybrid.edit = 'living')}>🛋️ Living-room speaker</button>
-      </div>
+      <h2>3D-printed + wood cabinet</h2>
+      <p class="sub">{entry?.blurb ?? 'A 3D-printed core carries the complicated inside (horn folds, line, port, waveguide); two flat plywood plates close it off.'} Big flat surfaces are wood, complex shapes are plastic.</p>
       {#if !isSub}
         <div class="chips" style="margin-top:8px">
-          {#each [['tl', 'Transmission line'], ['slot-port', 'Folded slot port'], ['waveguide', 'Waveguide']] as [t, lbl]}
+          {#each [['sealed', 'Sealed'], ['slot-port', 'Folded slot port'], ['tl', 'Transmission line'], ['waveguide', 'Waveguide only']] as [t, lbl]}
             <button class="chip" class:on={p.type === t} onclick={() => setType(t as ProfileType)}>{lbl}</button>
           {/each}
         </div>
       {/if}
       <label class="pick">
-        <span>Driver</span>
+        <span>{p.type === 'waveguide' ? 'Driver' : 'Woofer'}</span>
         <select bind:value={p.driverId} aria-label="Driver">
           {#each drivers as dr}<option value={dr.id}>{dr.brand} {dr.model} ({dr.sizeLabel}){dr.priceUsd ? ` — $${dr.priceUsd.toFixed(0)}` : ''}</option>{/each}
         </select>
       </label>
+      {#if !isSub && p.type !== 'waveguide'}
+        <h3>Tweeter</h3>
+        <div class="chips">
+          {#each [['front', 'In the cabinet'], ['pod', 'Separate pod on top'], ['none', 'None (woofer only)']] as [k, lbl]}
+            <button class="chip" class:on={tw.mount === k} onclick={() => { p.tweeterMount = k as TweeterMount; p.head = undefined; if (k !== 'none' && !p.tweeterId) p.tweeterId = tweeters[0]?.id; }}>{lbl}</button>
+          {/each}
+        </div>
+        {#if tw.mount !== 'none'}
+          <label class="pick">
+            <span>Tweeter</span>
+            <select bind:value={p.tweeterId} aria-label="Tweeter">
+              {#each tweeters as t}<option value={t.id}>{t.brand} {t.model}{t.priceUsd ? ` — $${t.priceUsd.toFixed(0)}` : ''}</option>{/each}
+            </select>
+          </label>
+          <label class="toggle"><input type="checkbox" checked={tw.waveguide} onchange={(e) => { p.tweeterWaveguide = (e.currentTarget as HTMLInputElement).checked; p.head = undefined; }} /> Printed round waveguide</label>
+          {#if tw.waveguide}
+            <div class="field">
+              <label for="h-twcov">Waveguide coverage</label><span class="val">{p.coverageDeg || 90}°</span>
+              <span class="hint">Narrower = more directivity control, a deeper flare.</span>
+              <input id="h-twcov" type="range" min="60" max="120" step="5" value={p.coverageDeg || 90} oninput={(e) => (p.coverageDeg = +(e.currentTarget as HTMLInputElement).value)} />
+            </div>
+          {/if}
+          {#if twWg && tw.tweeter}
+            <p class="small muted">Waveguide: Ø{Math.round(2 * twWg.R)} mm mouth, {twWg.depthMm.toFixed(0)} mm deep, throat Ø{Math.round(2 * twWg.r0)} mm for the {tw.tweeter.model}'s Ø{tw.tweeter.frameDiaMm} mm faceplate · controls directivity down to ≈ {Math.round(twWg.controlHz / 100) * 100} Hz.</p>
+            {#each waveguideIssues(twWg, tw.tweeter) as w}<ul class="callouts"><li class="bad">{w}</li></ul>{/each}
+          {/if}
+          {#if tw.mount === 'front'}
+            <p class="small muted">Above the woofer in the same printed front{p.type === 'tl' ? ', in its own small sealed compartment so the line stays the right size' : ''}{tw.waveguide ? '; the waveguide is a separate print that drops into a hole in the front wall' : ''}.</p>
+          {:else if head}
+            <p class="small muted">A separate printed {head.kind === 'waveguide' ? 'waveguide pod' : 'round pod'}, {head.w} × {head.h} × {head.d} mm, sitting {head.setbackMm} mm back on a soft pad: decoupled from the woofer cabinet, low diffraction, time-aligned with the woofer.</p>
+          {/if}
+        {/if}
+      {/if}
     </section>
 
     {#if sims.length}
@@ -197,7 +187,7 @@
           <input id={`h-${key}`} type="range" min={mn} max={mx} step={st} bind:value={p[key]} />
         </div>
       {/each}
-      {#if p.type !== 'waveguide'}
+      {#if p.type !== 'waveguide' && p.type !== 'sealed'}
         <div class="seg" style="margin:6px 0">
           <button class:on={p.construction === 'full'} onclick={() => (p.construction = 'full')}>Fully printed core</button>
           <button class:on={p.construction === 'bends'} onclick={() => { p.construction = 'bends'; if (![12, 18, 19].includes(p.wallMm)) p.wallMm = 18; }}>Printed bends + plywood walls</button>
@@ -289,7 +279,7 @@
           <p class="small muted">{geo.cores > 1 ? 'Dividers are the same sandwich panel. ' : ''}Build steps and checks are in the build notes below.</p>
         </div>
       {/if}
-      {#if p.type !== 'waveguide'}
+      {#if p.type !== 'waveguide' && p.type !== 'sealed'}
         <div class="field">
           <label for="h-legs">{p.type === 'slot-port' ? 'Port folds' : 'Legs (folds + 1)'}</label><span class="val">{p.legs}</span>
           <input id="h-legs" type="range" min="1" max="8" step="1" bind:value={p.legs} />
@@ -337,6 +327,55 @@
     </section>
 
     <section class="card">
+      <details>
+        <summary><h2 class="inline">Profile drawing (2D)</h2></summary>
+        <div class="svg-wrap sect">
+          <svg viewBox={`-60 -40 ${geo.W + 120} ${geo.H + 90}`} role="img" aria-label="Cross-section">
+            <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
+              <path d={solidPath} class="print" fill-rule="evenodd" />
+              {#each geo.dead as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="deadsp" />{/each}
+              {#each geo.strips as st}<rect x={st.rect.x0} y={st.rect.y0} width={st.rect.x1 - st.rect.x0} height={st.rect.y1 - st.rect.y0} class="ply" />{/each}
+              {#each geo.caps as c}<rect x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} class="capline" />{/each}
+              {#if geo.mouthRect}<rect x={geo.mouthRect.x0 - 4} y={geo.mouthRect.y0} width="8" height={geo.mouthRect.y1 - geo.mouthRect.y0} class="mouth" />{/if}
+              {#if geo.tweeter}
+                {@const twd = (geo.tweeter.waveguide ? geo.tweeter.waveguide.depthMm : 0) + (geo.tweeter.driver.mountDepthMm ?? 35)}
+                <rect x={geo.W - twd} y={geo.tweeter.y - geo.tweeter.holeR} width={twd} height={2 * geo.tweeter.holeR} class="drv tw" />
+              {/if}
+              <!-- driver -->
+              <rect x={geo.driver.x - 6} y={geo.driver.y - geo.driver.dia / 2} width="12" height={geo.driver.dia} class="drv" />
+              <path d={`M ${geo.driver.x} ${geo.driver.y - geo.driver.dia * 0.45} L ${geo.driver.x + (geo.driver.face === 'front' ? -1 : 1) * geo.driver.dia * 0.28} ${geo.driver.y} L ${geo.driver.x} ${geo.driver.y + geo.driver.dia * 0.45}`} class="cone" />
+            </g>
+            {#each geo.labels as l}
+              <text x={l.x} y={geo.H - l.y + 5} text-anchor="middle" class="lbl">{l.text}</text>
+            {/each}
+            <text x={geo.W + 8} y={geo.H - ((geo.mouthRect?.y0 ?? 0) + (geo.mouthRect?.y1 ?? 0)) / 2} class="lbl mouthlbl">{isSub ? 'mouth →' : p.type === 'waveguide' ? 'mouth →' : 'exit →'}</text>
+            <line x1="0" y1={geo.H + 22} x2={geo.W} y2={geo.H + 22} class="dim" />
+            <text x={geo.W / 2} y={geo.H + 42} text-anchor="middle" class="dimtxt">{mm(geo.W)} (depth, back → front)</text>
+            <line x1="-22" y1="0" x2="-22" y2={geo.H} class="dim" />
+            <text x="-30" y={geo.H / 2} text-anchor="middle" class="dimtxt" transform={`rotate(-90 -30 ${geo.H / 2})`}>{mm(geo.H)}</text>
+          </svg>
+        </div>
+        <p class="small muted">Grey = printed plastic, dark = air. This profile is extruded {geo.coreMm.toFixed(0)} mm (into the screen){geo.cores > 1 ? ` as ${geo.cores} cores separated by ${geo.cores - 1} plywood divider${geo.cores > 2 ? 's' : ''}` : ''} and closed on both sides by the wooden plates. Bends sweep round, wall tips are half-round and the mouth lips roll out — the shapes 3D printing makes easy.</p>
+      </details>
+    </section>
+
+    {#if !isSub}
+      <section class="card">
+        <h2>Use it in the simulator</h2>
+        <label class="toggle"><input type="checkbox" checked={home.hybrid.useLiving && home.hybrid.livingId === id} onchange={(e) => { const on = (e.currentTarget as HTMLInputElement).checked; home.hybrid.useLiving = on; if (on) home.hybrid.livingId = id; }} disabled={p.type === 'waveguide' || !geo.fits} /> Use this speaker as the living-room mains</label>
+        <p class="small muted">The living-room bass maps then use this speaker's simulated bass response instead of a plywood design's.</p>
+      </section>
+    {:else}
+      <section class="card">
+        <h2>Use it in the simulator</h2>
+        <label class="toggle"><input type="checkbox" bind:checked={home.hybrid.useOutdoor} disabled={p.type !== 'folded-horn' || !geo.fits} /> Use this horn for the outdoor subs</label>
+        <p class="small muted">The outdoor maps then use this cabinet's size and its simulated response, including how {p.mouth === 'corner' ? 'up to 4' : 'pairs of'} mouths couple.</p>
+      </section>
+    {/if}
+    {/if}
+
+    {#if mode === 'build'}
+    <section class="card">
       <h2>Printing</h2>
       <div class="bedin">
         {#each [['bedX', 'Bed X', 1], ['bedY', 'Bed Y', 1], ['maxZ', 'Max Z', 1], ['margin', 'Margin', 1], ['nozzle', 'Nozzle', 0.1], ['lineWidth', 'Line width', 0.05], ['layerH', 'Layer', 0.05], ['flow', 'Flow mm³/s', 1]] as [k, lbl, st]}
@@ -349,6 +388,37 @@
         <div class="stat"><div class="k">Alignment keys</div><div class="v">{plan.keys.length}</div><div class="s">+ dowels between layers</div></div>
         <div class="stat"><div class="k">Filament / time</div><div class="v">{(plan.totalGrams / 1000).toFixed(1)} kg</div><div class="s">~{plan.hours.toFixed(0)} h at {home.hybrid.printer.flow} mm³/s · {plan.layers} layers per core</div></div>
         <div class="stat"><div class="k">Largest piece</div><div class="v sm">{Math.round(Math.max(...plan.segments.map((s) => s.bedW)))} × {Math.round(Math.max(...plan.segments.map((s) => s.bedH)))} mm</div><div class="s">fits {plan.usable[0]} × {plan.usable[1]} usable</div></div>
+      </div>
+        <div class="svg-wrap sect">
+        <svg viewBox={`-30 -30 ${geo.W + 60} ${geo.H + 60}`} role="img" aria-label="Print layout">
+          <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
+            <path d={solidPath} class="print" fill-rule="evenodd" />
+            {#each geo.dead as r}<rect x={r.x0} y={r.y0} width={r.x1 - r.x0} height={r.y1 - r.y0} class="deadsp" />{/each}
+            {#each geo.strips as st}<rect x={st.rect.x0} y={st.rect.y0} width={st.rect.x1 - st.rect.x0} height={st.rect.y1 - st.rect.y0} class="ply" />{/each}
+            {#each geo.caps as c}<rect x={c.x0} y={c.y0} width={c.x1 - c.x0} height={c.y1 - c.y0} class="capline" />{/each}
+            {#each plan.cutLines as c}<line x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} class="cut" />{/each}
+            {#each plan.keys as k}<rect x={k.x - 6} y={k.y - 6} width="12" height="12" class="key" transform={`rotate(45 ${k.x} ${k.y})`} />{/each}
+          </g>
+          {#each plan.segments.filter((sg) => sg.z0 === 0 && sg.core === 0) as sg}
+            <text x={(sg.x0 + sg.x1) / 2} y={geo.H - (sg.y0 + sg.y1) / 2} text-anchor="middle" class="seglbl">{sg.tile}</text>
+          {/each}
+        </svg>
+      </div>
+      <p class="small muted">
+        {geo.construction === 'bends' ? 'Only the yellow-outlined end-caps are printed; wood-coloured parts are plywood. ' : ''}Red dashed = cut lines (placed through walls where possible); ◆ = alignment keys. Printed flat (profile on the bed){plan.rotated ? ', rotated 90° to fit' : ''}, the extrusion grows upward
+        {#if plan.cutsZ.length}in {plan.cutsZ.length + 1} layers of ≤ {home.hybrid.printer.maxZ} mm{/if}.
+      </p>
+      <div class="beds">
+        {#each plan.segments.filter((sg) => sg.z0 === 0 && sg.core === 0) as sg}
+          <div class="bed">
+            <svg viewBox={`0 0 ${home.hybrid.printer.bedX} ${home.hybrid.printer.bedY}`}>
+              <rect x="0" y="0" width={home.hybrid.printer.bedX} height={home.hybrid.printer.bedY} class="bedrect" />
+              <rect x={home.hybrid.printer.margin} y={home.hybrid.printer.margin} width={home.hybrid.printer.bedX - 2 * home.hybrid.printer.margin} height={home.hybrid.printer.bedY - 2 * home.hybrid.printer.margin} class="bedmargin" />
+              <rect x={home.hybrid.printer.margin} y={home.hybrid.printer.margin} width={sg.bedW} height={sg.bedH} class="part" />
+            </svg>
+            <span>{sg.tile} · {Math.round(sg.bedW)}×{Math.round(sg.bedH)}</span>
+          </div>
+        {/each}
       </div>
       <table class="tbl" style="margin-top:8px">
         <thead><tr><th>Piece</th><th>On the bed</th><th>Height (Z)</th><th>≈ g</th></tr></thead>
@@ -375,27 +445,79 @@
       </section>
     {/if}
 
+    {#if geo.tweeter}
+      {@const gt = geo.tweeter}
+      <section class="card">
+        <h2>Tweeter in the front wall{gt.waveguide ? ' (printed waveguide)' : ''}</h2>
+        <div class="stats">
+          <div class="stat"><div class="k">Hole in the front</div><div class="v sm">Ø{Math.round(2 * gt.holeR)} mm</div><div class="s">centre {Math.round(geo.H - gt.y)} mm from the top</div></div>
+          <div class="stat"><div class="k">Tweeter</div><div class="v sm">{gt.driver.model}</div><div class="s">cut-out Ø{gt.driver.cutoutDiaMm} mm · {gt.driver.mountDepthMm ?? '?'} mm deep</div></div>
+          {#if gt.waveguide}
+            <div class="stat"><div class="k">Waveguide insert</div><div class="v sm">Ø{Math.round(2 * gt.waveguide.flangeR)} × {gt.waveguide.depthMm.toFixed(0)} mm</div><div class="s">{gt.waveguide.coverageDeg}° · controls down to ≈ {Math.round(gt.waveguide.controlHz / 100) * 100} Hz</div></div>
+          {/if}
+        </div>
+        <ul class="callouts">
+          {#if gt.waveguide}
+            <li>Print the waveguide face down as one piece (no supports: the flare widens steadily). It drops into the Ø{Math.round(2 * gt.holeR)} mm hole and is screwed through its flange into heat-set inserts; seal the flange with foam gasket tape.</li>
+            <li>The tweeter mounts from behind, its faceplate flush in the throat recess (Ø{Math.round(2 * gt.waveguide.r0)} mm, {gt.waveguide.recessMm} mm deep), held by its own screws into the insert's back.</li>
+          {:else}
+            <li>The hole is printed in; use heat-set M3 inserts for the tweeter screws and seal it with foam gasket tape.</li>
+          {/if}
+          {#if p.type === 'tl'}<li>The tweeter sits in its own small sealed compartment above the line; run its wire through a sealed grommet.</li>{:else}<li>Its closed back sits inside the woofer's box — normal for dome tweeters.</li>{/if}
+        </ul>
+      </section>
+    {/if}
+    {#if head}
+      <section class="card">
+        <h2>Tweeter head ({head.kind === 'waveguide' ? 'waveguide pod' : 'round pod'})</h2>
+        <div class="stats">
+          <div class="stat"><div class="k">Pod</div><div class="v sm">{head.w} × {head.h} × {head.d} mm</div><div class="s">one print, face down</div></div>
+          <div class="stat"><div class="k">Filament</div><div class="v sm">≈ {head.grams} g</div><div class="s">{head.wallMm} mm walls</div></div>
+          <div class="stat"><div class="k">Tweeter hole</div><div class="v sm">Ø{head.tweeterCutoutMm} mm</div><div class="s">printed in, with a flush rebate</div></div>
+          <div class="stat"><div class="k">Set back</div><div class="v sm">{head.setbackMm} mm</div><div class="s">behind the cabinet front</div></div>
+        </div>
+        <ul class="callouts">{#each head.notes as n}<li>{n}</li>{/each}</ul>
+        {#if Math.max(head.w, head.h) > Math.min(home.hybrid.printer.bedX, home.hybrid.printer.bedY) - 2 * home.hybrid.printer.margin}
+          <ul class="callouts"><li class="bad">The pod's {Math.max(head.w, head.h)} mm face is bigger than your bed — print it in two halves split vertically.</li></ul>
+        {/if}
+      </section>
+    {/if}
+
     <section class="card">
       <h2>Build notes</h2>
       <ul class="callouts">
         {#each issues as is}<li class={is.level === 'ok' ? 'good' : is.level}><b>{is.title}</b><br />{is.body}</li>{/each}
       </ul>
     </section>
-
-    <section class="card">
-      <h2>Use it in the simulator</h2>
-      {#if isSub}
-        <label class="toggle"><input type="checkbox" bind:checked={home.hybrid.useOutdoor} disabled={p.type !== 'folded-horn' || !geo.fits} /> Use this horn for the outdoor subs</label>
-        <p class="small muted">The outdoor maps then use this cabinet's size and its simulated response, including how {p.mouth === 'corner' ? 'up to 4' : 'pairs of'} mouths couple.</p>
-      {:else}
-        <label class="toggle"><input type="checkbox" bind:checked={home.hybrid.useLiving} disabled={p.type === 'waveguide'} /> Use this speaker as the living-room mains</label>
-        <p class="small muted">The living-room bass maps then use this speaker's simulated bass response instead of the woodworking design's.</p>
-      {/if}
-    </section>
+    {/if}
   </div>
 </div>
 
 <style>
+  .drv.tw {
+    opacity: 0.55;
+  }
+  .s3d-wrap {
+    height: 58vh;
+    min-height: 340px;
+  }
+  details > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  details > summary::-webkit-details-marker {
+    display: none;
+  }
+  details > summary .inline {
+    display: inline;
+  }
+  details > summary .inline::before {
+    content: '▸ ';
+    color: var(--text-2);
+  }
+  details[open] > summary .inline::before {
+    content: '▾ ';
+  }
   .sandwich {
     border: 1px solid var(--border);
     border-radius: 10px;

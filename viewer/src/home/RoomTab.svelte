@@ -24,7 +24,7 @@
   import { designById, type Role } from './designs';
   import { planFor } from './planning';
   import { cabinetDims } from './hybridModels';
-  import { home, saveHome, ROOM_PRESETS } from './homeState.svelte';
+  import { home, saveHome, ROOM_PRESETS, livingPrinted } from './homeState.svelte';
   import {
     FT,
     type BoxAlignment,
@@ -87,7 +87,7 @@
         gainDb: home.system.fillGainDb,
       }).map((s) => {
         const moved = s.mount === 'wall' || s.mount === 'floor' ? { ...s, pos: { ...s.pos, ...avoidOpenings(s.pos, shape) } } : s;
-        const tallMains = home.designs[home.system.roles.mains]?.arrangement === 'tower' || (home.hybrid.useLiving && home.hybrid.living.heightMm > 700);
+        const tallMains = home.designs[home.system.roles.mains]?.arrangement === 'tower' || (home.hybrid.useLiving && livingPrinted().heightMm > 700);
         return s.role === 'mains' && tallMains ? { ...moved, mount: 'floor' as const } : moved;
       }),
       listenerPosition(home.room, home.placement),
@@ -110,7 +110,7 @@
       };
     }
     if (home.hybrid.useLiving) {
-      const hd = cabinetDims(home.hybrid.living);
+      const hd = cabinetDims(livingPrinted());
       out.mains = { w: hd.w, h: hd.h, d: hd.d, tweeterFromTopMm: 90, isTower: hd.h > 700 };
     }
     return out;

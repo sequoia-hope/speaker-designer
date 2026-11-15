@@ -3,8 +3,11 @@
   import MiniChart from './MiniChart.svelte';
   import Speaker3D from './Speaker3D.svelte';
   import BoxModeler from './BoxModeler.svelte';
+  import CustomDriverForm from './CustomDriverForm.svelte';
+  import HybridTab from './HybridTab.svelte';
+  import { PRINTED_DESIGNS } from './hybrid';
   import { home, saveHome } from './homeState.svelte';
-  import { DRIVERS, type DriverInfo } from './drivers';
+  import { allDrivers, type DriverInfo } from './drivers';
   import { DESIGNS, designById, type Role } from './designs';
   import { MATERIALS, type BuildPlan } from './speakerBuild';
   import { SPEED_OF_SOUND, fmtInFrac } from './roomAcoustics';
@@ -27,8 +30,27 @@
   const box = $derived(plan.box);
   let onStand = $state(false);
   const isSub = $derived(cur.arrangement === 'sub');
-  const woofers = $derived(DRIVERS.filter((d) => d.role === (isSub ? 'sub' : 'woofer')));
-  const tweeters = DRIVERS.filter((d) => d.role === 'tweeter');
+  const woofers = $derived(allDrivers().filter((d) => (isSub ? d.role === 'sub' || (!!d.custom && d.role === 'pa') : d.role === 'woofer')));
+  const tweeters = $derived(allDrivers().filter((d) => d.role === 'tweeter'));
+  // your own drivers: add / edit / delete
+  let driverForm = $state<'closed' | 'new' | 'edit'>('closed');
+  const curWoofer = $derived(woofers.find((d) => d.id === cur.wooferId));
+  function saveDriver(d: DriverInfo) {
+    const i = home.customDrivers.findIndex((x) => x.id === d.id);
+    if (i >= 0) home.customDrivers[i] = d;
+    else home.customDrivers.push(d);
+    // a sub driver can only be picked in a sub design (and vice versa)
+    if ((d.role === 'woofer') === !isSub) cur.wooferId = d.id;
+    driverForm = 'closed';
+    saveHome();
+  }
+  function deleteDriver(d: DriverInfo) {
+    if (!confirm(`Delete your driver "${d.brand} ${d.model}"?`)) return;
+    home.customDrivers = home.customDrivers.filter((x) => x.id !== d.id);
+    for (const s of Object.values(home.designs)) if (s.wooferId === d.id) s.wooferId = woofers.find((x) => !x.custom)?.id ?? s.wooferId;
+    driverForm = 'closed';
+    saveHome();
+  }
   const ROLE_LABEL: Record<Role, string> = {
     mains: 'Left/right mains',
     center: 'Centre',
@@ -112,34 +134,13 @@
     return out;
   });
 </script>
-<div class="split">
-<div class="vis">
-  <section class="card vis-card">
-    <div class="vis-hd">
-      <h2>{preset?.name ?? 'Speaker'}</h2>
-{#if plan.stand}
-      <div class="seg">
-        <button class:on={!onStand} onclick={() => (onStand = false)}>Speaker</button>
-        <button class:on={onStand} onclick={() => (onStand = true)}>On its stand</button>
-      </div>
-{/if}
-    </div>
-    <div class="dimline">
-      {fmtInFrac(plan.box.externalMm.w, 8)} W × {fmtInFrac(plan.box.externalMm.h, 8)} H × {fmtInFrac(plan.box.externalMm.d, 8)} D
-      · {plan.box.netVolumeL.toFixed(1)} L · −3 dB at {plan.box.f3Hz.toFixed(0)} Hz · {plan.massKgPerBox.toFixed(1)} kg
-    </div>
-    <div class="s3d-wrap">
-      <Speaker3D {plan} {woofer} {tweeter} showStand={onStand && !!plan.stand} />
-    </div>
-  </section>
-</div>
-<div class="side">
+{#snippet designsCard()}
 <section class="card">
   <h2>Designs</h2>
-  <p class="sub">Tap a design to see it in 3D. Each one is a starting point — change drivers or box below and the drawings follow.</p>
+  <p class="sub">Tap a design to see it in 3D. Plywood boxes and 🧩 3D-printed cabinets; each is a starting point — change drivers or shape below and the drawings follow.</p>
   <div class="gallery">
     {#each DESIGNS as d}
-      <button class="gcard" class:on={home.activeDesign === d.id} onclick={() => (home.activeDesign = d.id)}>
+      <button class="gcard" class:on={!home.activePrint && home.activeDesign === d.id} onclick={() => { home.activeDesign = d.id; home.activePrint = null; }}>
         <div class="gname">{d.name}</div>
         <div class="gshort">{d.short}</div>
         <div class="gtags">
@@ -148,18 +149,24 @@
         </div>
       </button>
     {/each}
-    <button class="gcard print" onclick={() => onOpenPrint('sub')}>
+    {#each PRINTED_DESIGNS as pd}
+      <button class="gcard print" class:on={home.activePrint === pd.id} onclick={() => (home.activePrint = pd.id)}>
+        <div class="gname">🧩 {pd.name}</div>
+        <div class="gshort">{pd.short}</div>
+        <div class="gtags">
+          {#if home.hybrid.useLiving && home.hybrid.livingId === pd.id}<span class="tag use">Left/right mains</span>{/if}
+          <span class="tag">3D-printed</span>
+          <span class="tag">{'●'.repeat(pd.difficulty)}{'○'.repeat(3 - pd.difficulty)} skill</span>
+        </div>
+      </button>
+    {/each}
+    <button class="gcard print" class:on={home.activePrint === 'sub'} onclick={() => (home.activePrint = 'sub')}>
       <div class="gname">🧩 Printed horn sub</div>
       <div class="gshort">3D-printed folded horn + plywood sides</div>
-      <div class="gtags"><span class="tag">outdoor subs</span>{#if home.hybrid.useOutdoor}<span class="tag use">in use</span>{/if}</div>
-    </button>
-    <button class="gcard print" onclick={() => onOpenPrint('living')}>
-      <div class="gname">🧩 Printed line / port</div>
-      <div class="gshort">3D-printed transmission line or slot port</div>
-      <div class="gtags"><span class="tag">living-room mains</span>{#if home.hybrid.useLiving}<span class="tag use">in use</span>{/if}</div>
+      <div class="gtags">{#if home.hybrid.useOutdoor}<span class="tag use">Outdoor subs</span>{/if}<span class="tag">3D-printed</span></div>
     </button>
   </div>
-  {#if preset}
+  {#if preset && !home.activePrint}
     <p class="small" style="margin-top:10px">{preset.blurb}</p>
     <p class="small muted"><b>Learn:</b> {preset.learn}</p>
     <div class="chips">
@@ -178,6 +185,36 @@
     {/if}
   {/if}
 </section>
+{/snippet}
+
+{#if home.activePrint}
+  {#key home.activePrint}
+    <HybridTab id={home.activePrint} mode="design" top={designsCard} />
+  {/key}
+{:else}
+<div class="split">
+<div class="vis">
+  <section class="card vis-card">
+    <div class="vis-hd">
+      <h2>{preset?.name ?? 'Speaker'}</h2>
+{#if plan.stand}
+      <div class="seg">
+        <button class:on={!onStand} onclick={() => (onStand = false)}>Speaker</button>
+        <button class:on={onStand} onclick={() => (onStand = true)}>On its stand</button>
+      </div>
+{/if}
+    </div>
+    <div class="dimline">
+      {fmtInFrac(plan.box.externalMm.w, 8)} W × {fmtInFrac(plan.box.externalMm.h, 8)} H × {fmtInFrac(plan.box.externalMm.d, 8)} D
+      · {plan.box.netVolumeL.toFixed(1)} L · −3 dB at {plan.box.f3Hz.toFixed(0)} Hz · {plan.massKgPerBox.toFixed(1)} kg
+    </div>
+    <div class="s3d-wrap">
+      <Speaker3D {plan} {woofer} {tweeter} problems={plan.box.fitIssues} showStand={onStand && !!plan.stand} />
+    </div>
+  </section>
+</div>
+<div class="side">
+{@render designsCard()}
 <section class="card">
   <h2>{isSub ? 'Subwoofer driver' : box.wooferCount > 1 ? `Woofers (×${box.wooferCount})` : 'Woofer'}</h2>
   <p class="sub">Real drivers with datasheet numbers. Tap to choose; the box and cut list follow.</p>
@@ -185,18 +222,36 @@
     {#each woofers as d}
       <button class="drv" class:on={cur.wooferId === d.id} onclick={() => (cur.wooferId = d.id)}>
         <div class="drv-hd">
-          <b>{d.brand} {d.model}</b><span class="tag">{d.sizeLabel}</span>
+          <b>{d.brand} {d.model}</b><span class="tag">{d.sizeLabel}</span>{#if d.custom}<span class="tag mine">yours</span>{/if}
           {#if d.priceUsd}<span class="tag">${d.priceUsd.toFixed(0)}</span>{/if}
         </div>
         <div class="drv-specs">
           Fs {d.fsHz} Hz · Qts {d.qts} · Vas {d.vasL} L · Xmax {d.xmaxMm} mm · {d.sensDb} dB
         </div>
         {#if cur.wooferId === d.id}
-          <div class="drv-blurb">{d.blurb} <a href={d.url} target="_blank" rel="noopener">Datasheet ↗</a></div>
+          <div class="drv-blurb">{d.blurb}{#if d.url} <a href={d.url} target="_blank" rel="noopener">Datasheet ↗</a>{/if}</div>
         {/if}
       </button>
     {/each}
   </div>
+  {#if driverForm === 'closed'}
+    <div class="chips" style="margin-top:8px">
+      <button class="chip" onclick={() => (driverForm = 'new')}>＋ Add your own driver</button>
+      {#if curWoofer?.custom}
+        <button class="chip" onclick={() => (driverForm = 'edit')}>✎ Edit {curWoofer.model}</button>
+        <button class="chip" onclick={() => deleteDriver(curWoofer)}>🗑 Delete</button>
+      {/if}
+    </div>
+  {:else}
+    {#key driverForm + (curWoofer?.id ?? '')}
+      <CustomDriverForm
+        initial={driverForm === 'edit' ? curWoofer : null}
+        defaultRole={isSub ? 'sub' : 'woofer'}
+        onSave={saveDriver}
+        onCancel={() => (driverForm = 'closed')}
+      />
+    {/key}
+  {/if}
 </section>
 
 {#if !isSub}
@@ -211,7 +266,7 @@
         </div>
         <div class="drv-specs">Fs {d.fsHz} Hz · {d.sensDb} dB · {d.nominalOhm} Ω · faceplate {d.frameDiaMm} mm</div>
         {#if cur.tweeterId === d.id}
-          <div class="drv-blurb">{d.blurb} <a href={d.url} target="_blank" rel="noopener">Datasheet ↗</a></div>
+          <div class="drv-blurb">{d.blurb}{#if d.url} <a href={d.url} target="_blank" rel="noopener">Datasheet ↗</a>{/if}</div>
         {/if}
       </button>
     {/each}
@@ -315,6 +370,8 @@
 </div>
 </div>
 
+{/if}
+
 <style>
   .sys-note {
     margin: 8px 0 0;
@@ -372,6 +429,10 @@
     flex-wrap: wrap;
     gap: 3px;
     margin-top: 5px;
+  }
+  .tag.mine {
+    background: rgba(251, 191, 36, 0.16);
+    color: var(--amber);
   }
   .tag.use {
     background: rgba(52, 211, 153, 0.18);
