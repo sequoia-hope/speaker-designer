@@ -1,3 +1,4 @@
+import type { VentAlignment, PortEnds } from './speakerBuild';
 // Catalogue of speaker designs you can build. Each is a starting point for the
 // planner (drivers + box + shape); the Speakers tab lets you tweak a copy.
 
@@ -20,6 +21,12 @@ export interface DesignSettings {
   quantity: number;
   stands: boolean;
   aspect: 'bookshelf' | 'tall' | 'cube';
+  /** vented: which alignment to start from (default compact = QB3) */
+  ventAlignment?: VentAlignment;
+  /** sealed: fibre fill (0 none, 0.5 light, 1 full) */
+  sealedFill?: number;
+  /** vented: port ends */
+  portEnds?: PortEnds;
 }
 
 export interface DesignPreset {

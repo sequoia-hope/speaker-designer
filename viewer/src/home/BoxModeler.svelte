@@ -2,10 +2,15 @@
   import MiniChart, { type MiniSeries } from './MiniChart.svelte';
   import type { DriverInfo } from './drivers';
   import type { BoxDesign } from './speakerBuild';
-  import { boxLabel, boxSpecOf, f3Of, runModel, type BoxSpec, type ModelResult } from './boxModel';
+  import { boxLabel, boxSpecOf, f3Of, printedAsModel, runModel, type BoxSpec, type ModelResult, type Placement } from './boxModel';
+  import { portNoiseMs } from './speakerBuild';
   import { home, saveHome } from './homeState.svelte';
 
-  let { box, woofer }: { box: BoxDesign; woofer: DriverInfo } = $props();
+  let { box, woofer, wooferYmm = 0 }: { box: BoxDesign; woofer: DriverInfo; wooferYmm?: number } = $props();
+  let placement = $state<Placement>('half');
+  let noiseOverride = $state<number | null>(null);
+  const noise = $derived(noiseOverride ?? portNoiseMs(box.portEnds));
+  const baffle = $derived({ widthMm: box.externalMm.w, heightMm: box.externalMm.h, driverYmm: wooferYmm || box.externalMm.h / 2 });
 
   type Graph = 'spl' | 'excursion' | 'port' | 'maxspl' | 'impedance' | 'delay';
   let graph = $state<Graph>('spl');
@@ -34,6 +39,9 @@
       box: spec,
       powerW,
       highPass: hpOn ? { hz: hpHz, order: hpOrder } : null,
+      portNoiseMs: noise,
+      placement,
+      baffle,
       f0: 10,
       f1: 500,
       n: 170,
@@ -45,7 +53,7 @@
     hpOn = on;
     if (on) hpHz = spec.kind === 'vented' ? Math.max(10, Math.round(spec.fbHz * 0.8)) : 25;
   }
-  const PORT_LIMIT = 17;
+  const PORT_LIMIT = $derived(noise);
   // the Port tab disappears when nothing on screen has a port
   $effect(() => {
     if (graph === 'port' && !vented && !home.modelerPins.some((p) => p.box.kind === 'vented')) graph = 'spl';
@@ -102,7 +110,9 @@
     home.modelerPins.map((p, i) => ({
       pin: p,
       color: PIN_COLORS[i % PIN_COLORS.length],
-      r: runModel({ driver: p.driver, count: p.count, box: p.box, powerW, highPass: hpOn ? { hz: hpHz, order: hpOrder } : null, f0: 10, f1: 500, n: 170 }),
+      r: p.printed
+        ? printedAsModel(p.printed, p.driver, powerW)
+        : runModel({ driver: p.driver, count: p.count, box: p.box, powerW, highPass: hpOn ? { hz: hpHz, order: hpOrder } : null, portNoiseMs: noise, placement, baffle, f0: 10, f1: 500, n: 170 }),
     }))
   );
   const alreadyPinned = $derived(home.modelerPins.some((p) => p.label === curLabel));
@@ -236,7 +246,7 @@
     ['delay', 'Group delay'],
   ];
   const HELP: Record<Graph, string> = {
-    spl: 'Sound level 1 m in front, on a large baffle (half space), with no room. The dashed line is the standard 2.83 V reference; the solid line is your amplifier power, including any high-pass filter.',
+    spl: 'Sound level 1 m in front (pick where it plays above: a big baffle is the datasheet condition; on a stand adds the baffle step from this cabinet\'s real front; near a wall or in a corner adds those reflections). The dashed line is the standard 2.83 V reference; the solid line is your amplifier power, including any high-pass filter.',
     excursion: 'How far the cone moves (peak). Above the red Xmax line distortion climbs fast; far above it the voice coil can hit the back plate. Vented boxes keep the cone still near tuning but let it flap freely below — that is what the high-pass filter is for.',
     port: 'Peak air speed in the port. Above ~17 m/s you start to hear chuffing and the port compresses; above ~25–30 m/s it is clearly audible. Fixes: a bigger (or second) port, flared ends, or less power below tuning.',
     maxspl: 'The loudest this box can play at each frequency before the cone reaches Xmax or the amplifier reaches the woofer’s power rating, whichever comes first. Where it dips, the bass is excursion-limited.',
@@ -273,6 +283,20 @@
     </div>
   {/if}
 
+  <div class="chips">
+    <span class="small muted" style="align-self:center">Where it plays:</span>
+    {#each [['half', 'On a big baffle (datasheet)'], ['free', 'On a stand (baffle step)'], ['wall', 'Near a wall'], ['corner', 'In a corner']] as [k, lbl]}
+      <button class="chip" class:on={placement === k} onclick={() => (placement = k as Placement)}>{lbl}</button>
+    {/each}
+  </div>
+  {#if spec.kind === 'vented'}
+    <div class="field">
+      <label for="bm-noise">Port noise threshold</label>
+      <span class="val">{noise} m/s</span>
+      <span class="hint">~17 m/s for a plain tube, ~25 for flared ends; also limits max output.</span>
+      <input id="bm-noise" type="range" min="10" max="35" step="1" value={noise} oninput={(e) => (noiseOverride = +(e.currentTarget as HTMLInputElement).value)} />
+    </div>
+  {/if}
   <div class="chips graphs" role="tablist" aria-label="Box modeler graph">
     {#each GRAPHS.filter(([g]) => g !== 'port' || vented || pinned.some((p) => p.pin.box.kind === 'vented')) as [g, lbl]}
       <button class="chip" role="tab" aria-selected={graph === g} class:on={graph === g} onclick={() => (graph = g)}>{lbl}</button>

@@ -58,6 +58,19 @@ export interface HomeState {
   customDrivers: DriverInfo[];
   /** designs pinned in the box modeler for side-by-side comparison */
   modelerPins: ModelPin[];
+  /** named saves of designs (plywood settings or printed params) */
+  savedDesigns: SavedDesign[];
+}
+
+export interface SavedDesign {
+  id: string;
+  name: string;
+  savedAt: string;
+  kind: 'plywood' | 'printed';
+  /** the catalogue design it was based on (plywood id, or a printed id / 'sub') */
+  baseId: string;
+  settings?: DesignSettings;
+  params?: HybridParams;
 }
 
 const KEY = 'speaker-designer.home.v4';
@@ -136,6 +149,7 @@ export function defaultState(): HomeState {
     stepsDone: {},
     customDrivers: [],
     modelerPins: [],
+    savedDesigns: [],
   };
 }
 
@@ -181,6 +195,7 @@ function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
       activePrint: typeof s.activePrint === 'string' ? s.activePrint : null,
       customDrivers: Array.isArray(s.customDrivers) ? s.customDrivers : [],
       modelerPins: Array.isArray(s.modelerPins) ? s.modelerPins : [],
+      savedDesigns: Array.isArray(s.savedDesigns) ? s.savedDesigns : [],
     };
   } catch {
     return d;

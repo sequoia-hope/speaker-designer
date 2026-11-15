@@ -1,10 +1,14 @@
 <script lang="ts">
   import MiniChart from './MiniChart.svelte';
   import Speaker3D from './Speaker3D.svelte';
+  import { platesDxf, printPieces, printPiecesStl } from './printExport';
+  import { downloadBlob } from './exporters';
   import type { Snippet } from 'svelte';
   import { home, printedParams, saveHome } from './homeState.svelte';
   import { allDrivers, findDriver } from './drivers';
-  import { autoFitAsync, buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, type FitChange, type HybridParams, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
+  import { trapTuningHz } from './lineNetwork';
+  import { printedAsModel, runModel } from './boxModel';
+  import { autoFitAsync, MOUTH_NOISE_MS, buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, type FitChange, type HybridParams, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
   import { cabinetDims, driverFor } from './hybridModels';
 
   // One printed design ('sub' or a PRINTED_DESIGNS id), shown either as a design
@@ -15,7 +19,7 @@
   const entry = $derived(printedDesignById(id));
   const tw = $derived(tweeterSetup(p));
   const tweeter = $derived(isSub ? null : tw.tweeter);
-  const twWg = $derived(tw.tweeter && tw.waveguide ? roundWaveguide(tw.tweeter, p.coverageDeg || 90) : null);
+  const twWg = $derived(tw.tweeter && tw.waveguide ? roundWaveguide(tw.tweeter, p.coverageDeg || 90, 4, p.tweeterXoHz) : null);
   const head = $derived(isSub ? null : headGeometry(p, tweeter, driverFor(p)));
   const tweeters = $derived(allDrivers().filter((x) => x.role === 'tweeter'));
   const d = $derived(driverFor(p));
@@ -64,10 +68,14 @@
   });
 
 
-  const drivers = $derived(allDrivers().filter((x) => (isSub ? x.role === 'pa' || x.role === 'sub' : x.role === 'woofer' || (p.type === 'waveguide' && x.role === 'tweeter'))));
+  const drivers = $derived(
+    allDrivers().filter((x) =>
+      isSub || p.type === 'tapped' ? x.role === 'pa' || x.role === 'sub' : x.role === 'woofer' || (p.type === 'waveguide' && x.role === 'tweeter')
+    )
+  );
   function setType(t: ProfileType) {
     // start the new profile from the catalogue design of that type (keeps the tweeter head)
-    const like = { sealed: 'mon-sealed', 'slot-port': 'mon-slot', tl: 'mon-tl' }[t as string];
+    const like = { sealed: 'mon-sealed', 'slot-port': 'mon-slot', tl: 'mon-tl', blh: 'blh', tapped: 'th-sub', shell: 'egg' }[t as string];
     const base = t === 'waveguide' ? HYBRID_PRESETS.waveguide : (printedDesignById(like ?? 'line')?.params ?? HYBRID_PRESETS.living);
     const keep = tweeterSetup(p);
     home.hybrid.designs[id] = {
@@ -107,6 +115,45 @@
     if (fitNote && 'before' in fitNote) Object.assign(p, fitNote.before);
     fitNote = null;
   }
+  let outGraph = $state<'spl' | 'z' | 'gd' | 'vel'>('spl');
+  const r0 = $derived(sims[0]?.r);
+  const isLine = $derived(p.type === 'tl' || p.type === 'blh' || p.type === 'tapped');
+  const stuffing = $derived(p.stuffing ?? (p.type === 'tl' ? [{ from: 0, to: 0.5, densityGL: 8 }] : []));
+  function setStuffing(patch: Partial<{ from: number; to: number; densityGL: number }>) {
+    const cur = stuffing[0] ?? { from: 0, to: 0.5, densityGL: 0 };
+    p.stuffing = [{ ...cur, ...patch }];
+  }
+  function toggleTrap(h: number, on: boolean) {
+    const set = new Set(p.trapHarmonics ?? []);
+    if (on) set.add(h);
+    else set.delete(h);
+    p.trapHarmonics = [...set].sort();
+  }
+  const fileBase = $derived((entry?.name ?? (isSub ? 'printed-horn-sub' : 'printed-speaker')).replace(/[^A-Za-z0-9]+/g, '-').toLowerCase());
+  // comparison pins (shared with the plywood box modeler), shown at 2.83 V / 1 m full space here
+  const pinLabel = $derived(`${entry?.name ?? 'Printed design'} (printed${p.driverId !== entry?.params.driverId ? `, ${d.model}` : ''})`);
+  function pinPrinted() {
+    if (home.modelerPins.length >= 4) return;
+    home.modelerPins.push({
+      id: `pin-${Date.now().toString(36)}`,
+      label: pinLabel,
+      driver: $state.snapshot(d) as typeof d,
+      count: 1,
+      box: { kind: 'sealed', netL: geo.chambers[0]?.volumeL ?? 0 },
+      printed: $state.snapshot(p) as HybridParams,
+    });
+    saveHome();
+  }
+  const PIN_COLORS = ['#a3e635', '#fb923c', '#2dd4bf', '#e2e8f0'];
+  const pinSeries = $derived(
+    isSub
+      ? []
+      : home.modelerPins.map((pin, i) => {
+          // 2.83 V, 1 m, full space: printed pins straight from their simulation; plywood ones from the box model (half space − 6 dB)
+          const m = pin.printed ? printedAsModel(pin.printed, pin.driver, 1, 20, 600, 90) : runModel({ driver: pin.driver, count: pin.count, box: pin.box, powerW: 1, f0: 20, f1: 600, n: 90 });
+          return { label: pin.label, color: PIN_COLORS[i % PIN_COLORS.length], width: 1.6, points: m.freqs.map((f, k) => ({ x: f, y: m.spl283[k] - 6.02 })) };
+        })
+  );
   const title = $derived(isSub ? 'Printed horn sub' : (entry?.name ?? 'Printed speaker'));
   const COLORS = ['#38bdf8', '#34d399', '#f472b6'];
   const sc = $derived(Math.min(1, 520 / Math.max(geo.W, geo.H)));
@@ -150,7 +197,7 @@
       <p class="sub">{entry?.blurb ?? 'A 3D-printed core carries the complicated inside (horn folds, line, port, waveguide); two flat plywood plates close it off.'} Big flat surfaces are wood, complex shapes are plastic.</p>
       {#if !isSub}
         <div class="chips" style="margin-top:8px">
-          {#each [['sealed', 'Sealed'], ['slot-port', 'Folded slot port'], ['tl', 'Transmission line'], ['waveguide', 'Waveguide only']] as [t, lbl]}
+          {#each [['sealed', 'Sealed'], ['slot-port', 'Folded slot port'], ['tl', 'Transmission line'], ['blh', 'Back-loaded horn'], ['tapped', 'Tapped horn'], ['shell', 'Curved shell'], ['waveguide', 'Waveguide only']] as [t, lbl]}
             <button class="chip" class:on={p.type === t} onclick={() => setType(t as ProfileType)}>{lbl}</button>
           {/each}
         </div>
@@ -161,10 +208,10 @@
           {#each drivers as dr}<option value={dr.id}>{dr.brand} {dr.model} ({dr.sizeLabel}){dr.priceUsd ? ` — $${dr.priceUsd.toFixed(0)}` : ''}</option>{/each}
         </select>
       </label>
-      {#if !isSub && p.type !== 'waveguide'}
+      {#if !isSub && p.type !== 'waveguide' && p.type !== 'tapped'}
         <h3>Tweeter</h3>
         <div class="chips">
-          {#each [['front', 'In the cabinet'], ['pod', 'Separate pod on top'], ['none', 'None (woofer only)']] as [k, lbl]}
+          {#each [['front', 'In the cabinet'], ['pod', 'Separate pod on top'], ['none', 'None (woofer only)']].filter(([k]) => p.type !== 'shell' || k !== 'front') as [k, lbl]}
             <button class="chip" class:on={tw.mount === k} onclick={() => { p.tweeterMount = k as TweeterMount; p.head = undefined; if (k !== 'none' && !p.tweeterId) p.tweeterId = tweeters[0]?.id; }}>{lbl}</button>
           {/each}
         </div>
@@ -181,6 +228,12 @@
               <label for="h-twcov">Waveguide coverage</label><span class="val">{p.coverageDeg || 90}°</span>
               <span class="hint">Narrower = more directivity control, a deeper flare.</span>
               <input id="h-twcov" type="range" min="60" max="120" step="5" value={p.coverageDeg || 90} oninput={(e) => (p.coverageDeg = +(e.currentTarget as HTMLInputElement).value)} />
+            </div>
+            <div class="field">
+              <label for="h-twxo">Match it to your crossover</label>
+              <span class="val">{p.tweeterXoHz ? `${p.tweeterXoHz} Hz` : 'standard size'}</span>
+              <span class="hint">The mouth is sized so the guide still controls the tweeter's spread at ~0.8 × the crossover — lower crossover, bigger guide.</span>
+              <input id="h-twxo" type="range" min="1000" max="4000" step="100" value={p.tweeterXoHz ?? 2000} oninput={(e) => (p.tweeterXoHz = +(e.currentTarget as HTMLInputElement).value)} />
             </div>
           {/if}
           {#if twWg && tw.tweeter}
@@ -199,30 +252,69 @@
     {#if sims.length}
       <section class="card">
         <h2>Output (simulated from this geometry)</h2>
-        <MiniChart
-          series={sims.map((s, i) => ({ label: s.n === 1 ? (isSub ? '1 cabinet on the ground' : '1 m, 2.83 V') : `${s.n} cabinets coupled`, color: COLORS[i], points: s.r.freqs.map((f, k) => ({ x: f, y: s.r.spl[k] })) }))}
-          xMin={isSub ? 15 : 20}
-          xMax={isSub ? 300 : 600}
-          yMin={isSub ? 80 : 60}
-          yMax={isSub ? 125 : 100}
-          yStep={5}
-          yLabel="dB"
-          xTicks={isSub ? [20, 30, 50, 100, 200] : [20, 50, 100, 200, 500]}
-          markers={[{ x: sims[0].r.f3, label: `f3 ${sims[0].r.f3.toFixed(0)} Hz` }]}
-        />
+        {#if r0.impedance}
+          <div class="chips" role="tablist" aria-label="Output graph">
+            {#each [['spl', 'Response'], ['z', 'Impedance'], ['gd', 'Group delay'], ['vel', 'Mouth air speed']] as [k, lbl]}
+              <button class="chip" role="tab" aria-selected={outGraph === k} class:on={outGraph === k} onclick={() => (outGraph = k as typeof outGraph)}>{lbl}</button>
+            {/each}
+          </div>
+        {/if}
+        {#if outGraph === 'spl' || !r0.impedance}
+          <MiniChart
+            series={[
+              ...sims.map((s, i) => ({ label: s.n === 1 ? (isSub ? '1 cabinet on the ground' : r0.mouthSpl ? 'Total, 1 m, 2.83 V' : '1 m, 2.83 V') : `${s.n} cabinets coupled`, color: COLORS[i], points: s.r.freqs.map((f, k) => ({ x: f, y: s.r.spl[k] })) })),
+              ...pinSeries,
+              ...(r0.mouthSpl && p.type !== 'tapped' ? [{ label: 'Cone (front)', color: '#94a3b8', dashed: true, width: 1.3, points: r0.freqs.map((f, k) => ({ x: f, y: r0.coneSpl![k] })) }] : []),
+              ...(r0.mouthSpl ? [{ label: p.type === 'tl' ? 'Terminus' : 'Horn mouth', color: '#f472b6', dashed: true, width: 1.3, points: r0.freqs.map((f, k) => ({ x: f, y: r0.mouthSpl![k] })) }] : []),
+            ]}
+            xMin={isSub ? 15 : 20}
+            xMax={isSub ? 300 : 600}
+            yMin={isSub ? 80 : 50}
+            yMax={isSub ? 125 : 100}
+            yStep={5}
+            yLabel="dB"
+            xTicks={isSub ? [20, 30, 50, 100, 200] : [20, 50, 100, 200, 500]}
+            markers={[{ x: r0.f3, label: `f3 ${r0.f3.toFixed(0)} Hz` }, ...(r0.resonances ?? []).slice(0, 4).map((f) => ({ x: f, label: `${Math.round(f)}`, color: '#a78bfa' }))]}
+          />
+        {:else}
+          {@const ys = outGraph === 'z' ? r0.impedance! : outGraph === 'gd' ? r0.groupDelayMs! : r0.mouthVelocity!}
+          {@const top = Math.max(...ys.filter((_, i) => r0.freqs[i] > 20 && Number.isFinite(ys[i])))}
+          <MiniChart
+            series={[
+              { label: outGraph === 'z' ? 'Impedance' : outGraph === 'gd' ? 'Group delay' : 'Peak air speed at 2.83 V', color: COLORS[0], points: r0.freqs.map((f, k) => ({ x: f, y: ys[k] })) },
+              ...(outGraph === 'vel' ? [{ label: `${MOUTH_NOISE_MS} m/s: noise starts`, color: '#fbbf24', dashed: true, width: 1.3, points: [{ x: 15, y: MOUTH_NOISE_MS }, { x: 600, y: MOUTH_NOISE_MS }] }] : []),
+            ]}
+            xMin={20}
+            xMax={600}
+            yMin={0}
+            yMax={Math.ceil((Math.max(top, outGraph === 'vel' ? MOUTH_NOISE_MS : 0) * 1.1) / 5) * 5 || 5}
+            yStep={outGraph === 'z' && top > 60 ? 20 : 5}
+            yLabel={outGraph === 'z' ? 'Ω' : outGraph === 'gd' ? 'ms' : 'm/s'}
+            xTicks={[20, 50, 100, 200, 500]}
+          />
+        {/if}
+        {#if !isSub}
+          <div class="chips">
+            <button class="chip" data-testid="pin-printed" onclick={pinPrinted} disabled={home.modelerPins.length >= 4 || home.modelerPins.some((x) => x.label === pinLabel)}>📌 {home.modelerPins.some((x) => x.label === pinLabel) ? 'Pinned' : 'Pin to compare'}</button>
+            <span class="small muted" style="align-self:center">Pinned designs — plywood or printed — show here and in the plywood box modeler, on the same basis.</span>
+          </div>
+        {/if}
+        {#if r0.lineWarnings?.length}
+          <ul class="callouts">{#each r0.lineWarnings as w}<li class="warn">{w}</li>{/each}</ul>
+        {/if}
         <p class="small muted">SPL at 1 m for 2.83 V{isSub ? ' (on the ground; coupled stacks are the whole stack)' : ''}. Max output (excursion- or power-limited) at 40 Hz: <b>{sims[sims.length - 1].r.maxSpl[sims[sims.length - 1].r.freqs.findIndex((f) => f >= 40)].toFixed(0)} dB</b>{isSub ? ` for ${sims[sims.length - 1].n} coupled` : ''}.</p>
       </section>
     {/if}
     <section class="card">
       <h2>Size & profile</h2>
-      {#each [['heightMm', 'Height', 200, 1400, 10], ['depthMm', 'Depth (profile width)', 120, 1400, 10], ['extrusionMm', 'Width between the outer plates', 60, 900, 5]] as [k, lbl, mn, mx, st]}
+      {#each (p.type === 'shell' ? [['heightMm', 'Diameter', 150, 600, 10], ['depthMm', 'Length (back to front)', 150, 800, 10]] : [['heightMm', 'Height', 200, 1400, 10], ['depthMm', 'Depth (profile width)', 120, 1400, 10], ['extrusionMm', 'Width between the outer plates', 60, 900, 5]]) as [k, lbl, mn, mx, st]}
         {@const key = k as 'heightMm' | 'depthMm' | 'extrusionMm'}
         <div class="field">
           <label for={`h-${key}`}>{lbl}</label><span class="val">{p[key]} mm</span>
           <input id={`h-${key}`} type="range" min={mn} max={mx} step={st} bind:value={p[key]} />
         </div>
       {/each}
-      {#if p.type !== 'waveguide' && p.type !== 'sealed'}
+      {#if p.type !== 'waveguide' && p.type !== 'sealed' && p.type !== 'shell'}
         <div class="seg" style="margin:6px 0">
           <button class:on={p.construction === 'full'} onclick={() => (p.construction = 'full')}>Fully printed core</button>
           <button class:on={p.construction === 'bends'} onclick={() => { p.construction = 'bends'; if (![12, 18, 19].includes(p.wallMm)) p.wallMm = 18; }}>Printed bends + plywood walls</button>
@@ -248,6 +340,7 @@
         <input id="h-wall" type="range" min={lw * 3} max={lw * 16} step={lw} value={p.wallMm} oninput={(e) => (p.wallMm = Math.round(+(e.target as HTMLInputElement).value / lw) * lw)} />
       </div>
       {/if}
+      {#if p.type !== 'shell'}
       <div class="field">
         <label for="h-div">Plywood dividers inside the core</label>
         <span class="val">{p.dividers} → {geo.cores} printed core{geo.cores > 1 ? 's' : ''} of {geo.coreMm.toFixed(0)} mm</span>
@@ -261,7 +354,7 @@
         <input id="h-round" type="range" min="0" max="1" step="0.05" bind:value={p.rounding} />
       </div>
       <div class="chips">
-        {#each [['bb18', 18, '18 mm birch'], ['bb12', 12, '12 mm birch'], ['mdf19', 19, '19 mm MDF']] as [id, t, lbl]}
+        {#each [['bb18', 18, '18 mm birch'], ['bb12', 12, '12 mm birch'], ['mdf19', 19, '19 mm MDF'], ['glass', 12, '12 mm laminated glass'], ['acrylic', 10, '10 mm acrylic']] as [id, t, lbl]}
           <button class="chip" class:on={p.plateMaterial === id} onclick={() => setPlate(id as PlateMaterial, t as number)}>{lbl} plates</button>
         {/each}
         <button class="chip" class:on={p.plateMaterial === 'sandwich'} onclick={() => setPlate('sandwich')}>Fibre sandwich plates</button>
@@ -314,7 +407,8 @@
           <p class="small muted">{geo.cores > 1 ? 'Dividers are the same sandwich panel. ' : ''}Build steps and checks are in the build notes below.</p>
         </div>
       {/if}
-      {#if p.type !== 'waveguide' && p.type !== 'sealed'}
+      {/if}
+      {#if p.type !== 'waveguide' && p.type !== 'sealed' && p.type !== 'shell'}
         <div class="field">
           <label for="h-legs">{p.type === 'slot-port' ? 'Port folds' : 'Legs (folds + 1)'}</label><span class="val">{p.legs}</span>
           <input id="h-legs" type="range" min="1" max="8" step="1" bind:value={p.legs} />
@@ -337,9 +431,29 @@
         </div>
       {:else if p.type === 'tl'}
         <div class="field">
-          <label for="h-tap">Line taper (end / start area)</label><span class="val">{p.taper.toFixed(2)}</span>
-          <input id="h-tap" type="range" min="0.2" max="1.2" step="0.05" bind:value={p.taper} />
+          <label for="h-tap">Line taper (end / start area)</label><span class="val">{p.taper.toFixed(2)}{p.taper > 1 ? ' — expanding' : p.taper < 1 ? ' — tapering' : ' — straight'}</span>
+          <span class="hint">Below 1 the line narrows towards the terminus (classic tapered line); above 1 it opens up (an expanding line, nearer a horn).</span>
+          <input id="h-tap" type="range" min="0.2" max="2.5" step="0.05" bind:value={p.taper} />
         </div>
+        <div class="field">
+          <label for="h-fold">Woofer position along the line</label>
+          <span class="val">{(p.driverFold ?? 0) === 0 ? 'at the closed end' : `at front fold ${p.driverFold} (≈ ${Math.round((geo.taps?.rearMm ?? 0) / Math.max(1, geo.path.s[geo.path.s.length - 1]) * 100)} % along)`}</span>
+          <span class="hint">An offset driver (≈ ⅓ along) doesn't excite the line's 3rd harmonic — a cleaner mid-bass with less stuffing.</span>
+          <input id="h-fold" type="range" min="0" max={Math.max(0, Math.floor((p.legs - 1) / 2))} step="1" value={p.driverFold ?? 0} oninput={(e) => (p.driverFold = +(e.currentTarget as HTMLInputElement).value)} />
+        </div>
+      {:else if p.type === 'blh' || p.type === 'tapped'}
+        <div class="field">
+          <label for="h-thr2">Throat area / cone area</label><span class="val">{p.throatRatio.toFixed(2)}</span>
+          <span class="hint">Smaller throat = more horn loading (efficiency) but more air speed; the horn then expands to fill the height.</span>
+          <input id="h-thr2" type="range" min="0.3" max="1.5" step="0.05" bind:value={p.throatRatio} />
+        </div>
+        {#if p.type === 'blh'}
+          <div class="field">
+            <label for="h-rc2">Rear chamber (at least what the woofer needs)</label><span class="val">{p.rearChamberL} L</span>
+            <span class="hint">The chamber behind the woofer and the throat form a low-pass filter that keeps the horn to the bass.</span>
+            <input id="h-rc2" type="range" min="1" max="30" step="0.5" bind:value={p.rearChamberL} />
+          </div>
+        {/if}
       {:else if p.type === 'slot-port'}
         <div class="field">
           <label for="h-slot">Slot height</label><span class="val">{p.slotMm} mm</span>
@@ -360,6 +474,39 @@
         {#each geo.chambers as c}<li><b>{c.label}:</b> {c.volumeL.toFixed(1)} L</li>{/each}
       </ul>
     </section>
+
+    {#if isLine}
+      <section class="card">
+        <h2>Stuffing &amp; resonance traps</h2>
+        <p class="sub">Damping the {p.type === 'tl' ? 'line' : 'horn'} tames its higher resonances (the 3rd, 5th… harmonics) that would otherwise colour the mid-bass. Modelled with the Miki fibre-absorption model from the fill density.</p>
+        <div class="field">
+          <label for="st-d">Polyester fibre fill</label>
+          <span class="val">{(stuffing[0]?.densityGL ?? 0).toFixed(1)} g/L{(stuffing[0]?.densityGL ?? 0) === 0 ? ' — unstuffed' : ''}</span>
+          <span class="hint">~5 = light, ~10 = typical first half of a line, 15+ = dense.</span>
+          <input id="st-d" type="range" min="0" max="20" step="0.5" value={stuffing[0]?.densityGL ?? 0} oninput={(e) => setStuffing({ densityGL: +(e.currentTarget as HTMLInputElement).value })} />
+        </div>
+        {#if (stuffing[0]?.densityGL ?? 0) > 0}
+          <div class="field">
+            <label for="st-to">Stuffed from the closed end to</label>
+            <span class="val">{Math.round((stuffing[0]?.to ?? 0.5) * 100)} % of the {p.type === 'tl' ? 'line' : 'path'}</span>
+            <input id="st-to" type="range" min="0.1" max="1" step="0.05" value={stuffing[0]?.to ?? 0.5} oninput={(e) => setStuffing({ from: 0, to: +(e.currentTarget as HTMLInputElement).value })} />
+          </div>
+        {/if}
+        <div class="chips">
+          <span class="small muted" style="align-self:center">Trap the line's</span>
+          {#each [3, 5] as h}
+            <label class="chip"><input type="checkbox" checked={(p.trapHarmonics ?? []).includes(h)} onchange={(e) => toggleTrap(h, (e.currentTarget as HTMLInputElement).checked)} /> {h}{h === 3 ? 'rd' : 'th'} harmonic</label>
+          {/each}
+        </div>
+        {#if geo.traps?.length}
+          <ul class="callouts">
+            {#each geo.traps as tr}
+              <li>Trap for the {tr.harmonic}{tr.harmonic === 3 ? 'rd' : 'th'} harmonic: a printed bottle of {tr.volumeL.toFixed(2)} L (Ø{tr.diaMm} × {Math.round(tr.lenMm)} mm) with a Ø{Math.round(2 * Math.sqrt(tr.neckAreaCm2 / Math.PI) * 10)} × {tr.neckLenMm} mm neck through the side plate, {Math.round(tr.atMm)} mm along the path — tuned to {Math.round(trapTuningHz(tr))} Hz. A wisp of wool inside broadens it.</li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    {/if}
 
     <section class="card">
       <details>
@@ -412,6 +559,11 @@
     {#if mode === 'build'}
     <section class="card">
       <h2>Printing</h2>
+      <div class="chips" style="margin-bottom:8px">
+        <button class="chip" onclick={() => downloadBlob(`${fileBase}-print-pieces.stl`, printPiecesStl(printPieces(geo, p, plan, d, head)), 'model/stl')} disabled={!geo.fits}>⬇ Print pieces (STL)</button>
+        <button class="chip" onclick={() => downloadBlob(`${fileBase}-plates.dxf`, platesDxf(geo, p, d), 'application/dxf')} disabled={!geo.fits}>⬇ Plates &amp; dividers (DXF)</button>
+      </div>
+      <p class="small muted" style="margin-top:0">The STL holds every piece as the plan splits it, laid out side by side in millimetres (your slicer can split them into objects). The front wall prints flat as its own plate — its round holes then need no support — and glues to the cores.</p>
       <div class="bedin">
         {#each [['bedX', 'Bed X', 1], ['bedY', 'Bed Y', 1], ['maxZ', 'Max Z', 1], ['margin', 'Margin', 1], ['nozzle', 'Nozzle', 0.1], ['lineWidth', 'Line width', 0.05], ['layerH', 'Layer', 0.05], ['flow', 'Flow mm³/s', 1]] as [k, lbl, st]}
           {@const key = k as 'bedX' | 'bedY' | 'maxZ' | 'margin' | 'nozzle' | 'lineWidth' | 'layerH' | 'flow'}

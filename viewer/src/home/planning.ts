@@ -29,6 +29,9 @@ export function planFor(s: DesignSettings, earHeightMm: number): PlannedDesign {
     quantity: s.quantity,
     standTweeterHeightMm: s.stands || s.arrangement === 'tower' ? earHeightMm : 0,
     aspect: s.aspect,
+    ventAlignment: s.ventAlignment,
+    sealedFill: s.sealedFill,
+    portEnds: s.portEnds,
   });
   return { plan, woofer, tweeter };
 }

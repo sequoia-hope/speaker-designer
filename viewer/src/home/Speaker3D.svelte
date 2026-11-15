@@ -273,8 +273,58 @@
     return g;
   }
 
+  /** A curved shell: one revolved solid about the woofer axis, on a printed pedestal. */
+  function buildShell(pm: PrintedModel) {
+    if (!viewer) return;
+    const s = 0.001;
+    const sg = pm.geo.shell!;
+    const ex = explode * sg.Rmax * 2 * s * 0.9;
+    const root = new THREE.Group();
+    viewer.content.add(root);
+    const speaker = new THREE.Group();
+    root.add(speaker);
+    const pedH = 60;
+    const cy = (pedH + sg.Rmax) * s;
+    // revolve the section (r, z) about the axis: lathe +y → world +z, front land at z = 0
+    const lathe = new THREE.LatheGeometry(sg.section.map(([r, z]) => new THREE.Vector2(r * s, (z - sg.zFront) * s)), 96);
+    const shell = withEdges(new THREE.Mesh(lathe, mat(PRINT, 'core', { roughness: 0.55 })));
+    // lathe axis (y) → world z after this turn: z' = y, so the back pole (y < 0) lands at −z
+    // and the front land at z = 0, facing the listener
+    shell.rotation.x = Math.PI / 2;
+    shell.position.y = cy;
+    speaker.add(shell);
+    // pedestal: a printed ring cradle and a foot
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(sg.Rmax * 0.32 * s, sg.Rmax * 0.4 * s, pedH * s, 48, 1, true), mat(PRINT, 'stand', { side: THREE.DoubleSide }));
+    ring.position.set(0, (pedH / 2) * s, -(sg.zFront * 0.45) * s);
+    ring.userData.partId = 'stand';
+    speaker.add(ring);
+    if (showDrivers) {
+      const wg = new THREE.Group();
+      wg.position.set(0, cy, ex * 1.6);
+      speaker.add(wg);
+      addWoofer(wg, woofer, s, { rebateDepthMm: null });
+      if (pm.head) speaker.add(headGroup(pm.head, -pm.head.setbackMm * s + ex * 0.4, cy + sg.Rmax * s + ex * 0.5));
+    }
+    const grid = new THREE.GridHelper(Math.max(1.6, sg.Rmax * s * 6), 16, 0x2b3a5c, 0x1a2541);
+    grid.position.set(0, -0.001, -(sg.zFront * s) / 2);
+    root.add(grid);
+    autoCut = 0.5;
+    clip.constant = (-sg.Rmax + (cutPos ?? autoCut) * 2 * sg.Rmax) * s;
+    if (cutaway) root.add(sectionCaps(root, clip));
+    const key = `shell|${sg.Rmax}|${sg.zFront}|${pm.head?.kind ?? ''}`;
+    if (key !== framedKey) {
+      framedKey = key;
+      viewer.frame(new THREE.Box3().setFromObject(speaker));
+    }
+    viewer.render();
+  }
+
   function buildPrinted(pm: PrintedModel) {
     if (!viewer) return;
+    if (pm.geo.shell) {
+      buildShell(pm);
+      return;
+    }
     const s = 0.001;
     const g = pm.geo;
     const p = pm.params;
@@ -289,14 +339,20 @@
 
     // the wall the woofer is mounted in, cut out of the profile and drawn on its own with a real hole
     const dv = g.driver;
-    const wx0 = dv.face === 'front' ? W - t : dv.x - t / 2;
-    const wx1 = dv.face === 'front' ? W : dv.x + t / 2;
+    const down = dv.face === 'down';
+    // a tapped horn's woofer sits on a fold wall: that stretch of wall, around the driver
+    const Rw = woofer.frameDiaMm / 2 + 6;
+    const wx0 = dv.face === 'front' ? W - t : down ? dv.x - Rw : dv.x - t / 2;
+    const wx1 = dv.face === 'front' ? W : down ? dv.x + Rw : dv.x + t / 2;
+    const wy0 = down ? dv.y - t / 2 : -1;
+    const wy1 = down ? dv.y + t / 2 : H + 1;
     const isAirAt = (x: number, y: number) => !pointInPoly(g.core, x, y) || g.holes.some((h) => pointInPoly(h, x, y));
     // printed regions: whole profile, or only the end caps for "printed bends + plywood walls"
     const regions: [number, number][] = g.construction === 'bends' ? g.caps.map((c) => [c.x0, c.x1]) : [[0, W]];
-    const wallCut: Ring = rectRing(wx0, wx1, -1, H + 1);
+    const wallCut: Ring = rectRing(wx0, wx1, wy0, wy1);
     let solid = pc.difference([ring(g.core)], ...g.holes.map((h) => [ring(h)] as Ring[]));
-    solid = pc.intersection(solid, pc.union(...regions.map(([a, b]) => [rectRing(a, b, -1, H + 1)] as Ring[])));
+    const rs = regions.map(([a, b]) => [rectRing(a, b, -1, H + 1)] as Ring[]);
+    solid = pc.intersection(solid, pc.union(rs[0], ...rs.slice(1)));
     solid = pc.difference(solid, [wallCut]);
     const coreShapes = solid.map((poly) => profileShape(open(poly[0]), poly.slice(1).map(open), s));
     // dividers: plate outline minus their cut-outs (notch round the drivers, windows through
@@ -335,8 +391,27 @@
       const x0 = side < 0 ? -g.Etot / 2 - plate + spread(0) - ex / s : g.Etot / 2 + spread(g.cores - 1) + ex / s;
       speaker.add(extrudeProfile(profileShape(plateOutline(W, H), [], s), W, x0, plate, mat(pm.plateColor, 'plate'), 'plate'));
     }
+    // a tapped horn: the stretch of fold wall under the woofer, with its hole, full width
+    if (down) {
+      const Wt = g.Etot;
+      const sh = new THREE.Shape();
+      // (across, W − depth) so the rotation below lands it at the right depth
+      sh.moveTo((-Wt / 2) * s, (W - wx1) * s);
+      sh.lineTo((Wt / 2) * s, (W - wx1) * s);
+      sh.lineTo((Wt / 2) * s, (W - wx0) * s);
+      sh.lineTo((-Wt / 2) * s, (W - wx0) * s);
+      const hole = new THREE.Path();
+      hole.absarc(0, (W - dv.x) * s, (woofer.cutoutDiaMm / 2) * s, 0, Math.PI * 2, true);
+      sh.holes.push(hole);
+      const m = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: t * s, bevelEnabled: false, curveSegments: 48 }), mat(PRINT, 'front')));
+      // local (across, v, thickness) → world (x, y = thickness, z = −v)
+      m.rotation.x = -Math.PI / 2;
+      m.position.y = (dv.y - t / 2) * s;
+      m.userData.partId = 'front';
+      speaker.add(m);
+    }
     // the driver's wall, with its hole: the solid stretches of the profile at that depth, full width
-    {
+    if (!down) {
       const xm = (wx0 + wx1) / 2;
       const spans: [number, number][] = [];
       let y0: number | null = null;
@@ -375,9 +450,28 @@
     // woofer
     if (showDrivers) {
       const wg = new THREE.Group();
-      wg.position.set(0, dv.y * s, (wx1 - W) * s + (dv.face === 'front' ? ex * 1.6 : 0));
+      if (down) {
+        // mounted from below the wall, cone facing down, magnet up into the throat run
+        wg.position.set(0, (dv.y - t / 2) * s - ex * 0.8, (dv.x - W) * s);
+        wg.rotation.x = Math.PI / 2;
+      } else wg.position.set(0, dv.y * s, (wx1 - W) * s + (dv.face === 'front' ? ex * 1.6 : 0));
       speaker.add(wg);
       addWoofer(wg, woofer, s, { rebateDepthMm: null });
+    }
+    // resonance traps: printed Helmholtz bottles on the outside of the left plate, neck through it
+    for (const tr of g.traps ?? []) {
+      const xOut = -g.Etot / 2 - plate + spread(0) - ex / s;
+      const bottle = withEdges(new THREE.Mesh(new THREE.CylinderGeometry((tr.diaMm / 2) * s, (tr.diaMm / 2) * s, tr.lenMm * s, 40), mat(PRINT, 'trap')));
+      bottle.rotation.z = Math.PI / 2;
+      bottle.position.set((xOut - 4 - tr.lenMm / 2) * s - ex * 0.5, tr.y * s, (tr.x - W) * s);
+      const neckR = Math.sqrt(tr.neckAreaCm2 / Math.PI) * 10;
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(neckR * s, neckR * s, (tr.neckLenMm + plate) * s, 24), mat(0xb4b4bb, 'trap'));
+      neck.rotation.z = Math.PI / 2;
+      neck.position.set((xOut + plate / 2 - 4) * s - ex * 0.5, tr.neckY * s, (tr.neckX - W) * s);
+      for (const m of [bottle, neck]) {
+        m.userData.partId = 'trap';
+        speaker.add(m);
+      }
     }
     // tweeter in the front wall (flush, or in a printed waveguide insert)
     if (g.tweeter && showDrivers) {
@@ -460,6 +554,16 @@
         size: `${g.coreMm.toFixed(0)} mm wide · ${p.wallMm} mm thick`,
         lines: ['A straight wall in plywood, slotted 25 mm into the printed caps at each end. Lengths are in the strip list on the Build tab.'],
       },
+      trap: g.traps?.length
+        ? {
+            title: `Resonance trap${g.traps.length > 1 ? 's' : ''} (printed Helmholtz bottle${g.traps.length > 1 ? 's' : ''})`,
+            size: g.traps.map((tr) => `${tr.harmonic}${tr.harmonic === 3 ? 'rd' : 'th'} harmonic: ${tr.volumeL.toFixed(2)} L, Ø${tr.diaMm} × ${Math.round(tr.lenMm)} mm`).join(' · '),
+            lines: [
+              'A small sealed bottle whose neck opens into the channel near the closed end: it resonates at one of the line\'s harmonics and soaks it up, so that note no longer leaks from the terminus.',
+              'Glue or screw it to the outside of the side plate over a hole the size of its neck; a wisp of wool inside broadens it.',
+            ],
+          }
+        : { title: '', size: '', lines: [] },
       waveguide: g.tweeter?.waveguide
         ? {
             title: `Printed waveguide insert (${g.tweeter.waveguide.coverageDeg}°)`,
@@ -470,6 +574,7 @@
             ],
           }
         : { title: '', size: '', lines: [] },
+      stand: { title: 'Pedestal (printed)', size: '', lines: ['A ring cradle that holds the round shell; cork or felt on top so it doesn\'t scratch, a little sand inside for weight.'] },
       head: printed.head
         ? {
             title: `Tweeter head (${printed.head.kind === 'waveguide' ? 'waveguide pod' : 'round pod'})`,

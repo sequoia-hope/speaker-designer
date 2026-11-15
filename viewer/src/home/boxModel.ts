@@ -19,6 +19,8 @@
 import type { DriverInfo } from './drivers';
 import type { BoxDesign } from './speakerBuild';
 import { SPEED_OF_SOUND } from './roomAcoustics';
+import { baffleResponse } from './diffraction';
+import { buildGeometry, simulate, type HybridParams } from './hybrid';
 
 const RHO = 1.204;
 const C = SPEED_OF_SOUND;
@@ -76,13 +78,37 @@ export function tsToMech(d: DriverInfo): MechParams {
 }
 
 export type BoxSpec =
-  | { kind: 'sealed'; netL: number; ql?: number }
+  | { kind: 'sealed'; netL: number; ql?: number; fill?: number }
   | { kind: 'vented'; netL: number; fbHz: number; portAreaM2: number; ql?: number };
 
 export interface HighPass {
   hz: number;
   /** 2 = 12 dB/oct, 4 = 24 dB/oct (Butterworth) */
   order: 2 | 4;
+}
+
+export type Placement = 'half' | 'free' | 'wall' | 'corner';
+
+/** Placement factor per frequency (complex): baffle step + boundary reflections, 1 m on axis. */
+function placementFactor(inp: ModelInput, freqs: number[]): Cx[] {
+  const pl = inp.placement ?? 'half';
+  if (pl === 'half' || !inp.baffle) return freqs.map(() => cx(1));
+  const b = inp.baffle;
+  const r = baffleResponse({ widthMm: b.widthMm, heightMm: b.heightMm, driverXmm: b.widthMm / 2, driverYmm: b.driverYmm, edgeRadiusMm: b.edgeRadiusMm ?? 12, distanceM: 1 }, freqs);
+  // walls 0.3 m behind/beside the speaker: image sources, path 1 m vs 1 m + 2d (rigid walls)
+  const d = 0.3;
+  const images = pl === 'wall' ? [2 * d] : pl === 'corner' ? [2 * d, 2 * d, 2 * Math.SQRT2 * d] : [];
+  return freqs.map((f, i) => {
+    const g = Math.pow(10, r.db[i] / 20);
+    const ph = (r.phaseDeg[i] * Math.PI) / 180;
+    let sum = cx(1);
+    for (const extra of images) {
+      const k = (2 * Math.PI * f) / C;
+      const a = 1 / (1 + extra);
+      sum = add(sum, cx(a * Math.cos(-k * extra), a * Math.sin(-k * extra)));
+    }
+    return mul(cx(g * Math.cos(ph), g * Math.sin(ph)), sum);
+  });
 }
 
 export interface ModelInput {
@@ -92,6 +118,12 @@ export interface ModelInput {
   /** amplifier power into the nominal impedance of the woofer group (W) */
   powerW: number;
   highPass?: HighPass | null;
+  /** port noise threshold (peak m/s); also limits max SPL. Default 17 */
+  portNoiseMs?: number;
+  /** where it plays: on a big baffle (datasheet-like), free space with the real baffle step,
+   *  near a wall, or in a corner; the baffle (mm) is needed for anything but 'half' */
+  placement?: Placement;
+  baffle?: { widthMm: number; heightMm: number; driverYmm: number; edgeRadiusMm?: number };
   f0?: number;
   f1?: number;
   n?: number;
@@ -99,6 +131,8 @@ export interface ModelInput {
 
 export interface ModelResult {
   freqs: number[];
+  /** complex pressure at 1 m per volt (after placement), for crossover work */
+  H: Cx[];
   /** SPL at 1 m, half space, at the chosen power (dB) */
   spl: number[];
   /** SPL at 2.83 V with no filter (dB) — the sensitivity-style curve */
@@ -115,7 +149,7 @@ export interface ModelResult {
   /** loudest it can play before hitting Xmax or the power rating (dB); same filter applied */
   maxSpl: number[];
   /** which limit sets maxSpl at each frequency */
-  maxSplLimit: ('xmax' | 'power')[];
+  maxSplLimit: ('xmax' | 'power' | 'port')[];
   voltsRms: number;
   nominalOhm: number;
   ratedPowerW: number;
@@ -153,10 +187,14 @@ export function runModel(inp: ModelInput): ModelResult {
   const xmax = Math.max(d.xmaxMm, 0.5) / 1000;
 
   // per-driver share of the box
-  const Vb = inp.box.netL / 1000 / N;
+  const fill = inp.box.kind === 'sealed' ? (inp.box.fill ?? 0) : 0;
+  // fibre fill: ~15 % more effective volume, and absorption losses on top of the leak
+  const Vb = (inp.box.netL * (1 + 0.15 * fill)) / 1000 / N;
+  const portNoise = inp.portNoiseMs ?? 17;
+  const placeF = placementFactor(inp, freqs);
   const Cab = Vb / (RHO * C * C);
   const vented = inp.box.kind === 'vented' ? inp.box : null;
-  const ql = inp.box.ql ?? (vented ? 7 : 50);
+  const ql = inp.box.ql ?? (vented ? 7 : 1 / (1 / 50 + fill / 8));
   const wb = vented ? 2 * Math.PI * vented.fbHz : 2 * Math.PI * d.fsHz;
   // leakage/absorption as a resistance across the box compliance (Small: Ql = ωb·Cab·Ral)
   const Ral = ql / (wb * Cab);
@@ -171,8 +209,9 @@ export function runModel(inp: ModelInput): ModelResult {
   const zMag: number[] = [];
   const zPh: number[] = [];
   const maxSpl: number[] = [];
-  const maxLim: ('xmax' | 'power')[] = [];
+  const maxLim: ('xmax' | 'power' | 'port')[] = [];
   const phase: number[] = [];
+  const Hc: Cx[] = [];
 
   for (const f of freqs) {
     const w = 2 * Math.PI * f;
@@ -190,12 +229,13 @@ export function runModel(inp: ModelInput): ModelResult {
     // DC cone + port + leak cancel exactly
     const Ul1 = scl(pb1, 1 / Ral);
     const U1 = add(add(scl(u1, m.Sd), Up1), Ul1);
-    // p(1 m, half space) per volt, for the whole group
-    const p1 = scl(mul(cx(0, w), U1), (RHO * N) / (2 * Math.PI));
+    // p(1 m, half space) per volt, for the whole group, then where it is placed
+    const p1 = mul(scl(mul(cx(0, w), U1), (RHO * N) / (2 * Math.PI)), placeF[freqs.indexOf(f)]);
     const Zin = scl(add(Ze, div(cx(m.Bl * m.Bl), Zmot)), 1 / N);
 
     const H = inp.highPass ? highPassH(inp.highPass, f) : cx(1);
     const V = scl(H, voltsRms);
+    Hc.push(p1);
     const p = mul(p1, V);
     const u = mul(u1, V);
     const Up = mul(Up1, V);
@@ -215,9 +255,11 @@ export function runModel(inp: ModelInput): ModelResult {
     const xPerVolt = (abs(u1) * hMag * Math.SQRT2) / w;
     const vByX = xmax / Math.max(xPerVolt, 1e-15); // amp volts (rms, before filter)
     const vByP = Math.sqrt(ratedPowerW * nominalOhm);
-    const vLim = Math.min(vByX, vByP);
+    const portPerVolt = vented ? (abs(Up1) * hMag * Math.SQRT2) / Sp : 0;
+    const vByPort = portPerVolt > 0 ? portNoise / portPerVolt : Infinity;
+    const vLim = Math.min(vByX, vByP, vByPort);
     maxSpl.push(db(abs(p1) * hMag * vLim));
-    maxLim.push(vByX < vByP ? 'xmax' : 'power');
+    maxLim.push(vLim === vByPort ? 'port' : vByX < vByP ? 'xmax' : 'power');
   }
 
   // group delay = −dφ/dω, with phase unwrapped
@@ -245,6 +287,7 @@ export function runModel(inp: ModelInput): ModelResult {
 
   return {
     freqs,
+    H: Hc,
     spl,
     spl283,
     excursionMm: exc,
@@ -270,7 +313,58 @@ export function boxSpecOf(box: BoxDesign): BoxSpec {
     const a = box.port.count * Math.PI * (box.port.diameterMm / 2000) ** 2;
     return { kind: 'vented', netL: box.netVolumeL, fbHz: box.port.fbHz, portAreaM2: a, ql: box.alignment.ql };
   }
-  return { kind: 'sealed', netL: box.netVolumeL };
+  return { kind: 'sealed', netL: box.netVolumeL, fill: box.sealedFill };
+}
+
+// ---------------------------------------------------------------------------
+// Driver guidance: EBP, derived parameters, which box suits, data sanity
+// ---------------------------------------------------------------------------
+
+export interface DriverGuidance {
+  ebp: number;
+  blTm: number;
+  mmsG: number;
+  cmsMmPerN: number;
+  rmsKgS: number;
+  verdict: 'sealed' | 'ported' | 'either';
+  reasons: string[];
+  /** inconsistent or missing T/S data */
+  dataIssues: string[];
+}
+
+/**
+ * EBP = Fs/Qes (efficiency-bandwidth product): below ~50 the motor is strong for the
+ * resonance and a sealed box suits, above ~90 a ported one, between either. A low Qts
+ * (< ~0.35) also suits a transmission line or horn — it has the damping to drive one
+ * without boom.
+ */
+export function driverGuidance(d: DriverInfo): DriverGuidance {
+  const m = tsToMech(d);
+  const ebp = d.fsHz / m.qes;
+  const reasons: string[] = [];
+  let verdict: DriverGuidance['verdict'] = 'either';
+  if (ebp < 50) {
+    verdict = 'sealed';
+    reasons.push(`EBP ${ebp.toFixed(0)} (below ~50): a strong motor for its resonance — it gives its best, tight bass in a sealed box.`);
+  } else if (ebp > 90) {
+    verdict = 'ported';
+    reasons.push(`EBP ${ebp.toFixed(0)} (above ~90): a light motor for its resonance — sealed would sound thin; a port (or a line/horn) gives it the bass.`);
+  } else reasons.push(`EBP ${ebp.toFixed(0)} (between ~50 and ~90): works sealed or ported — sealed for a sub-assisted system, ported for more bass on its own.`);
+  if (d.qts < 0.35) reasons.push(`Qts ${d.qts} (below ~0.35): well damped — a good transmission-line or horn candidate.`);
+  if (d.qts > 0.6) reasons.push(`Qts ${d.qts} (high): little damping — needs a large sealed box or an open baffle; avoid ports.`);
+  const dataIssues: string[] = [];
+  if (d.qes == null || d.qms == null) dataIssues.push(`The datasheet gives no ${d.qes == null ? 'Qes' : 'Qms'}; it is assumed from Qts.`);
+  if (d.qes != null && d.qms != null) {
+    const q = (d.qes * d.qms) / (d.qes + d.qms);
+    if (Math.abs(q - d.qts) / d.qts > 0.08) dataIssues.push(`Qes and Qms combine to Qts ${q.toFixed(2)}, not the stated ${d.qts} — one of the three is probably a typo.`);
+  }
+  if (d.role !== 'tweeter') {
+    const sens = sensitivityFromTS(d);
+    if (Math.abs(sens - d.sensDb) > 2.5)
+      dataIssues.push(`The T/S numbers imply ${sens.toFixed(1)} dB at 2.83 V, the datasheet says ${d.sensDb} dB — makers often measure sensitivity where the cone's breakup lifts it, but a big gap can mean a mistyped Vas, Sd or Qes.`);
+  }
+  if (d.leMh == null) dataIssues.push('No voice-coil inductance (Le) given — impedance above a few hundred Hz is approximate.');
+  return { ebp, blTm: m.Bl, mmsG: m.Mms * 1000, cmsMmPerN: m.Cms * 1000, rmsKgS: m.Rms, verdict, reasons, dataIssues };
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +378,49 @@ export interface ModelPin {
   driver: DriverInfo;
   count: number;
   box: BoxSpec;
+  /** a printed design (TL, horn, shell…): simulated with its own geometry */
+  printed?: HybridParams;
+}
+
+/**
+ * A printed design's simulation, converted to the modeler's basis: the given amp
+ * power instead of 2.83 V, and half space (+6 dB) instead of full space — so it
+ * can sit on the same graphs and in the same table as the plywood boxes.
+ */
+export function printedAsModel(params: HybridParams, d: DriverInfo, powerW: number, f0 = 10, f1 = 500, n = 170): ModelResult {
+  const g = buildGeometry(params, d);
+  const r = simulate(params, d, g, { coupled: 1, floor: false, f0, f1, n });
+  const volts = Math.sqrt(Math.max(powerW, 1e-6) * d.nominalOhm);
+  const k = volts / 2.83;
+  const dbK = 20 * Math.log10(k);
+  const HALF = 6.02;
+  const spl283 = r.spl.map((x) => x + HALF);
+  const pass = spl283.filter((_, i) => r.freqs[i] > 150 && r.freqs[i] < 400);
+  const z = r.impedance ?? r.freqs.map(() => NaN);
+  let minI = 0;
+  z.forEach((v, i) => {
+    if (r.freqs[i] > 2 * d.fsHz && v < z[minI]) minI = i;
+  });
+  return {
+    freqs: r.freqs,
+    H: [],
+    spl: spl283.map((x) => x + dbK),
+    spl283,
+    excursionMm: r.excursionMm.map((x) => x * k),
+    portVelocity: r.mouthVelocity ? r.mouthVelocity.map((x) => x * k) : [],
+    impedance: z,
+    impedancePhase: z.map(() => 0),
+    groupDelayMs: r.groupDelayMs ?? r.freqs.map(() => 0),
+    maxSpl: r.maxSpl.map((x) => x + HALF),
+    maxSplLimit: r.freqs.map(() => 'xmax' as const),
+    voltsRms: volts,
+    nominalOhm: d.nominalOhm,
+    ratedPowerW: d.powerW ?? 50,
+    xmaxMm: d.xmaxMm,
+    sensitivity283: pass.length ? pass.reduce((a, b) => a + b, 0) / pass.length : spl283[spl283.length - 1],
+    minImpedance: { ohm: z[minI], hz: r.freqs[minI] },
+    mech: tsToMech(d),
+  };
 }
 
 export function boxLabel(driver: DriverInfo, count: number, box: BoxSpec) {

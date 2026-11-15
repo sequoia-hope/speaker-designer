@@ -15,6 +15,12 @@ import type { DriverInfo } from './drivers';
 
 export type BoxType = 'sealed' | 'vented';
 export type PortSide = 'front' | 'rear';
+/** vented alignments: compact = Keele's QB3 fit; flat = maximally flat (SBB4-like); deep = 1 dB ripple, lowest F3 (C4-like) */
+export type VentAlignment = 'compact' | 'flat' | 'deep';
+/** port ends: one flanged + one free (a tube through a panel), both flanged, or flared (printed/rounded) */
+export type PortEnds = 'one-flanged' | 'flanged' | 'flared';
+/** air speed at which a port starts to be heard (peak, m/s) — flared ends tolerate more */
+export const portNoiseMs = (ends: PortEnds | undefined) => (ends === 'flared' ? 25 : 17);
 /**
  * Driver arrangement on the baffle.
  *  wt     — tweeter above one woofer (stand-mount 2-way)
@@ -89,6 +95,10 @@ export interface BuildOptions {
   standTweeterHeightMm: number;
   /** proportion of external height to width (tall & narrow = less baffle-step, fits stands) */
   aspect: 'bookshelf' | 'tall' | 'cube';
+  ventAlignment?: VentAlignment;
+  /** sealed: fibre fill 0…1 — raises the effective volume (up to ~15 %) and adds absorption losses */
+  sealedFill?: number;
+  portEnds?: PortEnds;
 }
 
 export const DEFAULT_OPTIONS_PARTIAL = {
@@ -175,6 +185,8 @@ export interface BoxDesign {
   terminalMm: { xMm: number; yMm: number; kind: 'cup' | 'posts' };
   /** parts that physically collide or don't fit — empty for a buildable design */
   fitIssues: string[];
+  sealedFill: number;
+  portEnds: PortEnds;
 }
 
 export interface BuildPlan {
@@ -242,9 +254,11 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
       warnings.push(
         `This woofer's Qts (${d.qts.toFixed(2)}) is too high for Qtc ${o.targetQtc.toFixed(2)} — the box would be enormous. Using Qtc ${qtc.toFixed(2)}.`
       );
-    netL = (d.vasL / ((qtc / d.qts) ** 2 - 1)) * o.volumeScale;
-    // actual Qtc for the scaled volume
-    const alpha = d.vasL / netL;
+    // fibre fill makes the air act ~15 % bigger (closer to isothermal), so the box can be smaller
+    const fillGain = 1 + 0.15 * (o.sealedFill ?? 0);
+    netL = ((d.vasL / ((qtc / d.qts) ** 2 - 1)) * o.volumeScale) / fillGain;
+    // actual Qtc for the scaled volume (its effective, stuffed volume)
+    const alpha = d.vasL / (netL * fillGain);
     const qtcActual = d.qts * Math.sqrt(alpha + 1);
     const fc = d.fsHz * Math.sqrt(alpha + 1);
     alignment = { kind: 'sealed', fcHz: fc, qtc: qtcActual };
@@ -262,8 +276,9 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
       warnings.push(
         `Qts ${d.qts.toFixed(2)} is very low; a vented box will sound lean unless boosted with EQ.`
       );
-    netL = 15 * d.vasL * Math.pow(d.qts, 2.87) * o.volumeScale;
-    const fb = 0.42 * d.fsHz * Math.pow(d.qts, -0.9) * o.tuningScale;
+    const al = ventedAlignment(d, o.ventAlignment ?? 'compact');
+    netL = al.vbL * o.volumeScale;
+    const fb = al.fbHz * o.tuningScale;
     alignment = {
       kind: 'vented',
       fsHz: d.fsHz,
@@ -394,7 +409,7 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
       return sh && sh.di >= need - 1 ? sh : null;
     };
     const V_MAX_OK = 25;
-    const textbook = designPort(d, netL, fbTarget);
+    const textbook = designPort(d, netL, fbTarget, undefined, undefined, o.portEnds);
     let chosen: { p: PortDesign; sh: Shape; why: 'ok' | 'narrow' | 'wide' | 'tuning' } | null = null;
     const first = tryPort(textbook);
     if (first) chosen = { p: textbook, sh: first, why: 'ok' };
@@ -402,7 +417,7 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
     if (!chosen && textbook.lengthMm < panelT) {
       // too short to be a tube: a wider port is longer for the same tuning
       for (const D of sizes.filter((x) => x > textbook.diameterMm)) {
-        const p = designPort(d, netL, fbTarget, D, 1);
+        const p = designPort(d, netL, fbTarget, D, 1, o.portEnds);
         const sh = tryPort(p);
         if (sh) {
           chosen = { p, sh, why: 'wide' };
@@ -412,8 +427,8 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
     }
     if (!chosen) {
       for (const D of [...sizes].reverse().filter((x) => x < textbook.diameterMm || textbook.count > 1)) {
-        const p = designPort(d, netL, fbTarget, D, 1);
-        if (p.peakVelocityMs > V_MAX_OK) continue;
+        const p = designPort(d, netL, fbTarget, D, 1, o.portEnds);
+        if (p.peakVelocityMs > V_MAX_OK + (o.portEnds === 'flared' ? 6 : 0)) continue;
         const sh = tryPort(p);
         if (sh) {
           chosen = { p, sh, why: 'narrow' };
@@ -425,8 +440,8 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
       const fb = fbTarget * Math.pow(1.04, k);
       for (const D of [...sizes].reverse()) {
         for (const count of [1, 2]) {
-          const p = designPort(d, netL, fb, D, count);
-          if (p.peakVelocityMs > V_MAX_OK) continue;
+          const p = designPort(d, netL, fb, D, count, o.portEnds);
+          if (p.peakVelocityMs > V_MAX_OK + (o.portEnds === 'flared' ? 6 : 0)) continue;
           const sh = tryPort(p);
           if (sh) {
             chosen = { p, sh, why: 'tuning' };
@@ -443,6 +458,12 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
       notes.push(
         `Vented: tuned to ${port.fbHz.toFixed(0)} Hz. Below that, output falls at 24 dB/octave and the cone unloads, so keep a high-pass (or a sub crossover) below tuning if you play loud.`
       );
+      if (port.firstPipeResonanceHz < 700)
+        warnings.push(
+          `The port's own pipe resonance (≈ ${Math.round(port.firstPipeResonanceHz)} Hz) is low enough to leak midrange out of it — keep the port away from the woofer (rear or bottom), line its inside with thin felt, or use a shorter, narrower port.`
+        );
+      if (o.portEnds === 'flared')
+        notes.push('Flared port ends (a printed or routed radius on both ends) stay quiet up to ~25 m/s instead of ~17 m/s, so the port can be smaller and shorter for the same output.');
       if (chosen.why === 'narrow')
         warnings.push(
           `The usual Ø${textbook.diameterMm} mm port would be ${textbook.lengthMm.toFixed(0)} mm long — too long for this box. Using a narrower Ø${port.diameterMm} mm port (${port.lengthMm.toFixed(0)} mm); its air reaches ${port.peakVelocityMs.toFixed(0)} m/s at full excursion, so it may chuff when played loud.`
@@ -474,6 +495,14 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
   void grossL;
 
   const ext = { w: wi + 2 * t, h: hi + 2 * t, d: di + t + baffle };
+  {
+    // parallel walls: axial standing waves at c/2L between each pair; the lowest ones fall in
+    // the woofer's range, so line the walls (or stuff) to stop them colouring the midrange
+    const modes = [hi, wi, di].map((L) => SPEED_OF_SOUND / (2 * (L / 1000))).sort((a, b) => a - b);
+    notes.push(
+      `Internal standing waves: the inside's parallel walls ring at ≈ ${modes.map((m) => Math.round(m)).join(', ')} Hz (and multiples). Line the back and one side wall with 20–25 mm of acoustic foam or felt${o.boxType === 'sealed' ? ', or fill the box loosely with polyester' : ' (keep the port clear)'} so they don't come back through the cone.`
+    );
+  }
 
   // baffle step: transition from 4π → 2π radiation at roughly 115/W(m) Hz
   const baffleStepHz = 115 / (Math.min(ext.w, ext.h) / 1000);
@@ -516,6 +545,8 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
     rearPorts: [],
     terminalMm: { xMm: ext.w / 2, yMm: (ext.h * 2) / 3, kind: 'cup' },
     fitIssues: [],
+    sealedFill: o.sealedFill ?? 0,
+    portEnds: o.portEnds ?? 'one-flanged',
   };
 }
 
@@ -749,7 +780,38 @@ export const PORT_TUBES_MM = [35, 41, 51, 64, 76, 89, 102];
  * Port for a tuning. With no tube given, picks the smallest standard tube that
  * keeps peak air speed ≤ 17 m/s; otherwise uses the given tube size and count.
  */
-export function designPort(d: DriverInfo, netL: number, fbHz: number, tubeMm?: number, tubeCount?: number): PortDesign {
+/**
+ * Vented alignment for a driver: compact = Keele's QB3 fit (Vb ≈ 15·Vas·Qts^2.87,
+ * fb ≈ 0.42·fs·Qts^−0.9); flat / deep = searched on Small's vented response (Q_L = 7)
+ * for the lowest −3 dB point whose passband peaks at most 0.1 dB in a box up to 1.5 × QB3
+ * (maximally flat, SBB4-like), or 1 dB in a box up to 2 × QB3 (extended, C4-like bump).
+ */
+export function ventedAlignment(d: DriverInfo, kind: VentAlignment): { vbL: number; fbHz: number } {
+  if (kind === 'compact') return { vbL: 15 * d.vasL * Math.pow(d.qts, 2.87), fbHz: 0.42 * d.fsHz * Math.pow(d.qts, -0.9) };
+  const peakMax = kind === 'flat' ? 0.1 : 1.0;
+  let best = { vbL: 15 * d.vasL * Math.pow(d.qts, 2.87), fbHz: 0.42 * d.fsHz * Math.pow(d.qts, -0.9), f3: Infinity };
+  const fs: number[] = [];
+  for (let i = 0; i < 90; i++) fs.push(d.fsHz * 0.25 * Math.pow(16, i / 89));
+  for (let a = 0; a < 40; a++) {
+    const vb = d.vasL * 0.15 * Math.pow(40, a / 39);
+    for (let b = 0; b < 40; b++) {
+      const fb = d.fsHz * (0.4 + (1.4 * b) / 39);
+      const al: BoxAlignment = { kind: 'vented', fsHz: d.fsHz, fbHz: fb, qts: d.qts, alpha: d.vasL / vb, ql: 7 };
+      let peak = -Infinity;
+      let f3 = Infinity;
+      for (const f of fs) {
+        const db = toDb(boxResponse(al, f));
+        if (db > peak) peak = db;
+        if (f3 === Infinity && db >= -3) f3 = f;
+      }
+      // a practical box: flat at most 1.5 ×, deep at most 2 × the QB3 volume (bigger always goes deeper)
+      if (peak <= peakMax && f3 < best.f3 && vb <= (kind === 'flat' ? 1.5 : 2) * 15 * d.vasL * Math.pow(d.qts, 2.87)) best = { vbL: vb, fbHz: fb, f3 };
+    }
+  }
+  return { vbL: best.vbL, fbHz: best.fbHz };
+}
+
+export function designPort(d: DriverInfo, netL: number, fbHz: number, tubeMm?: number, tubeCount?: number, ends: PortEnds = 'one-flanged'): PortDesign {
   // Required port area for ≤ 17 m/s peak air speed when the cone moves Xmax at fb
   // (conservative: at fb nearly all the volume velocity leaves through the port).
   const vMax = 17;
@@ -765,7 +827,9 @@ export function designPort(d: DriverInfo, netL: number, fbHz: number, tubeMm?: n
   const sp = count * Math.PI * (D / 2000) ** 2;
   const Vb = netL / 1000;
   const leff = (sp * (SPEED_OF_SOUND / (2 * Math.PI * fbHz)) ** 2) / Vb; // m
-  const L = (leff - 0.732 * (D / 1000) * 1) * 1000; // physical, mm (end correction per tube)
+  // end correction per tube: flanged end 0.85·r, free end 0.61·r; flared ends behave like flanged ones
+  const endCorr = ends === 'one-flanged' ? 0.732 : 0.85; // × D
+  const L = (leff - endCorr * (D / 1000)) * 1000; // physical, mm
   const peakV = (2 * Math.PI * fbHz * vd) / sp;
   return {
     diameterMm: D,

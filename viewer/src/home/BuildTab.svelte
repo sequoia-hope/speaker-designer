@@ -7,6 +7,8 @@
   import Speaker3D from './Speaker3D.svelte';
   import PanelDrawing from './PanelDrawing.svelte';
   import HybridTab from './HybridTab.svelte';
+  import { plywoodDxf } from './printExport';
+  import { downloadBlob } from './exporters';
   import { PRINTED_DESIGNS } from './hybrid';
 
   let { plan, woofer, tweeter, onOpenPrint }: { plan: BuildPlan; woofer: DriverInfo; tweeter: DriverInfo | null; onOpenPrint: (w: 'sub' | 'living') => void } = $props();
@@ -20,7 +22,6 @@
       home.activePrint = null;
     }
   }
-  void onOpenPrint;
 
   const cur = $derived(home.designs[home.activeDesign]);
   const box = $derived(plan.box);
@@ -88,6 +89,7 @@
 <section class="card">
   {@render picker()}
   <h2>Woodworking plan</h2>
+  <button class="chip" style="margin:0 0 8px" onclick={() => downloadBlob(`${(DESIGNS.find((x) => x.id === home.activeDesign)?.name ?? 'speaker').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase()}-panels.dxf`, plywoodDxf(plan), 'application/dxf')}>⬇ Cut sheet (DXF) — every panel with its holes, for a CNC or laser</button>
   <p class="sub">
     {cur.quantity} × {box.alignment.kind} box for the {woofer.brand} {woofer.model}{tweeter ? ` + ${tweeter.model}` : ''},
     in {plan.material.name}. Glued butt-joint construction: every part is a plain rectangle — no angled cuts.
@@ -371,23 +373,6 @@
 {/snippet}
 
 <style>
-  .printnote {
-    font-size: 13px;
-    color: var(--text-2);
-    background: var(--bg-2);
-    border-radius: 9px;
-    padding: 7px 10px;
-    margin-bottom: 10px;
-  }
-  .linklike {
-    background: none;
-    border: none;
-    color: var(--accent);
-    padding: 0;
-    font: inherit;
-    text-decoration: underline;
-    cursor: pointer;
-  }
   .pick {
     display: flex;
     gap: 8px;

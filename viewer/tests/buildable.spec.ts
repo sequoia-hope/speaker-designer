@@ -47,7 +47,7 @@ test('every printed design fits: woofer space clear, walls intact, dividers cut 
     expect(g.fits, `${id}: ${g.warnings.join(' | ')}`).toBe(true);
     const bad = buildIssues(p, g, d, planPrint(g, DEFAULT_PRINTER), DEFAULT_PRINTER, id === 'sub').filter((i) => i.level === 'bad');
     expect(bad.map((i) => i.title), id).toEqual([]);
-    if (p.type !== 'waveguide') expect(g.dividerCuts.length, `${id} divider cut-outs`).toBeGreaterThan(0);
+    if (p.type !== 'waveguide' && p.type !== 'shell') expect(g.dividerCuts.length, `${id} divider cut-outs`).toBeGreaterThan(0);
   }
 });
 

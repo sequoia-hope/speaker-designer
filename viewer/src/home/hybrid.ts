@@ -19,6 +19,9 @@
 
 import { SPEED_OF_SOUND } from './roomAcoustics';
 import { findDriver, type DriverInfo } from './drivers';
+import { shellBands, shellGeometry, shellVolumeCm3, type ShellGeometry } from './shell';
+import { baffleResponse } from './diffraction';
+import { abs as cabs, arg as carg, quarterWaveHz, solveLine, trapTuningHz, type Stuffing, type Trap } from './lineNetwork';
 
 const RHO = 1.204;
 const C = SPEED_OF_SOUND;
@@ -74,13 +77,13 @@ export function zRad(areaM2: number, f: number): Cx {
 // ---------------------------------------------------------------------------
 // parameters
 // ---------------------------------------------------------------------------
-export type ProfileType = 'folded-horn' | 'tl' | 'slot-port' | 'waveguide' | 'sealed';
+export type ProfileType = 'folded-horn' | 'tl' | 'slot-port' | 'waveguide' | 'sealed' | 'blh' | 'tapped' | 'shell';
 /** printed tweeter head on top of a living-room cabinet */
 export type HeadKind = 'none' | 'flat' | 'waveguide';
 export type TweeterMount = 'none' | 'front' | 'pod';
 export type MouthPlace = 'edge' | 'corner';
 
-export type PlateMaterial = 'bb18' | 'mdf19' | 'bb12' | 'sandwich';
+export type PlateMaterial = 'bb18' | 'mdf19' | 'bb12' | 'sandwich' | 'glass' | 'acrylic';
 
 export type SandwichCore = 'ribs' | 'balsa' | 'paulownia' | 'poplar';
 
@@ -138,10 +141,20 @@ export interface HybridParams {
   /** (older saves) separately printed tweeter head — superseded by tweeterMount + tweeterWaveguide */
   head?: HeadKind;
   tweeterId?: string;
+  /** transmission line: mount the woofer at this front fold (0 = the closed end; 1 = first front fold ≈ ⅓ along…) */
+  driverFold?: number;
+  /** lines and horns: stretches stuffed with fibre (fractions of the path) */
+  stuffing?: Stuffing[];
+  /** resonance traps: printed Helmholtz bottles on a side plate, each tuned to this line harmonic (3, 5…) */
+  trapHarmonics?: number[];
+  /** slot / port mouths: flare radius of the rounded ends (mm) — quieter at high air speed */
+  portFlareMm?: number;
   /** living-room 2-ways: the tweeter in the cabinet's front wall, in a separate printed pod on top, or none */
   tweeterMount?: TweeterMount;
   /** a printed round waveguide round the tweeter (an insert in the front wall, or the pod's face) */
   tweeterWaveguide?: boolean;
+  /** planned crossover (Hz): sizes the tweeter waveguide's mouth so it controls down to there */
+  tweeterXoHz?: number;
   /** waveguide coverage angle (deg) — also used by the 2D 'waveguide' profile */
 }
 
@@ -249,9 +262,19 @@ export interface Geometry {
   /** sealed empty space boxed in by plywood (not printed) */
   dead: Rect[];
   labels: { x: number; y: number; text: string }[];
-  driver: { x: number; y: number; dia: number; face: 'front' | 'internal' };
-  /** path along the horn / line / port, start → exit: cumulative length (mm) and area (mm²) */
-  path: { s: number[]; area: number[] };
+  /** 'front': in the front wall facing out; 'internal': on an internal baffle facing forward;
+   *  'down': on a fold wall, cone facing down (a tapped horn), x = centre along the depth */
+  driver: { x: number; y: number; dia: number; face: 'front' | 'internal' | 'down' };
+  /** path along the horn / line / port, start → exit: cumulative length (mm), area (mm²), bend nodes */
+  path: { s: number[]; area: number[]; bend?: boolean[] };
+  /** path position (mm) of each 180° fold's middle, in order */
+  foldS?: number[];
+  /** where the driver's rear (and, for a tapped horn, front) feed the path (mm along it) */
+  taps?: { rearMm: number; frontMm?: number };
+  /** a curved shell (solid of revolution about the woofer axis) instead of an extruded profile */
+  shell?: ShellGeometry;
+  /** resonance traps fitted (designed from trapHarmonics), with where they sit in the profile */
+  traps?: (Trap & { harmonic: number; x: number; y: number; diaMm: number; lenMm: number; neckX: number; neckY: number })[];
   mouthRect: Rect | null;
   /** where plywood dividers are cut away (profile coords): a notch round the driver,
    *  and a window through each box chamber so it stays one volume of air */
@@ -431,6 +454,15 @@ export function frontMountProblems(g: Geometry, plateMm: number, woofer: DriverI
   const solid = (y: number) => y > 0 && y < g.H && pointInPoly(g.core, faceX, y) && !g.holes.some((h) => pointInPoly(h, faceX, y));
   const faceW = g.Etot + 2 * plateMm;
   const parts: { name: string; y: number; r: number; hole: number }[] = [];
+  if (g.driver.face === 'down') {
+    const R = woofer.frameDiaMm / 2;
+    for (let dx = -R; dx <= R; dx += 1)
+      if (!pointInPoly(g.core, g.driver.x + dx, g.driver.y) || g.holes.some((h) => pointInPoly(h, g.driver.x + dx, g.driver.y))) {
+        out.push(`The woofer frame (Ø${woofer.frameDiaMm} mm) would hang off the end of its fold wall — a deeper cabinet.`);
+        break;
+      }
+    if (woofer.cutoutDiaMm > g.Etot - 8) out.push(`The woofer's cut-out (Ø${woofer.cutoutDiaMm} mm) doesn't fit across the ${Math.round(g.Etot)} mm wide fold wall — widen the cabinet.`);
+  }
   if (g.driver.face === 'front') parts.push({ name: `woofer frame (Ø${woofer.frameDiaMm} mm)`, y: g.driver.y, r: woofer.frameDiaMm / 2, hole: woofer.cutoutDiaMm });
   if (g.tweeter)
     parts.push({
@@ -532,12 +564,46 @@ function coreWithChannel(W: number, H: number, A: Pt[], B: Pt[]): Pt[] {
   return [bExit, ...outer, aExit, ...[...A].reverse().slice(1), ...B.slice(0, -1)];
 }
 
-function seg(s: number[], a: number[], len: number, a0: number, a1: number, n = 6) {
+function seg(s: number[], a: number[], len: number, a0: number, a1: number, n = 6, bends?: boolean[], isBend = false) {
   const start = s.length ? s[s.length - 1] : 0;
   for (let i = 1; i <= n; i++) {
     s.push(start + (len * i) / n);
     a.push(a0 + ((a1 - a0) * i) / n);
+    bends?.push(isBend);
   }
+}
+
+/**
+ * Resonance traps for a line: one printed Helmholtz bottle per requested
+ * harmonic, tuned to it, hung off the path near the closed end (where every
+ * odd harmonic has a pressure maximum), on the outside of a side plate with
+ * its neck through the plate into the channel.
+ */
+function designTraps(p: HybridParams, path: { s: number[]; area: number[] }, legs: Leg[], xa: number, xb: number, W: number, t: number): Geometry['traps'] {
+  if (!p.trapHarmonics?.length || !legs.length || path.s.length < 2) return [];
+  const L = path.s[path.s.length - 1];
+  const fq = quarterWaveHz(L, path.area[path.area.length - 1], 1);
+  const neckAreaCm2 = 4;
+  const neckLenMm = 30;
+  const H = legs[0].yt + t;
+  return p.trapHarmonics.map((h, k) => {
+    const f = fq * h;
+    const S = neckAreaCm2 / 1e4;
+    const a = Math.sqrt(S / Math.PI);
+    const V = S / (((2 * Math.PI * f) / C) ** 2 * (neckLenMm / 1000 + 1.7 * a)); // m³
+    // a wide, shallow drum on the plate (~60 mm deep), no bigger than the plate allows
+    const dia = Math.max(50, Math.min(160, Math.sqrt((4 * V * 1e9) / (Math.PI * 60)), 0.45 * Math.min(W, H)));
+    const lenMm = (V * 1e9) / (Math.PI * (dia / 2) ** 2);
+    // its neck opens into the first leg near the closed end (every odd harmonic's pressure peak)
+    const atMm = Math.min(0.04 * L + k * 60, (xb - xa) * 0.8);
+    const neckX = p.type === 'tl' || p.type === 'tapped' ? xb - atMm : xa + atMm;
+    const neckY = (legs[0].yt + legs[0].yb) / 2;
+    // the drum sits over the neck, shifted to stay on the plate (the neck can be off-centre)
+    const x = Math.max(dia / 2 + 8, Math.min(neckX, W - dia / 2 - 8)) - k * (dia + 10);
+    const y = Math.max(dia / 2 + 8, Math.min(neckY, H - dia / 2 - 8));
+    void trapTuningHz;
+    return { atMm, volumeL: V * 1000, neckAreaCm2, neckLenMm, q: 3, harmonic: h, x, y, diaMm: Math.round(dia), lenMm, neckX, neckY };
+  });
 }
 
 /** Plywood dividers keep this much frame round a chamber window (like a window brace). */
@@ -552,6 +618,7 @@ function insetRect(r: Rect, m: number): Rect | null {
 function driverCutRect(dv: Geometry['driver'], d: DriverInfo, W: number, t: number): Rect {
   const md = d.mountDepthMm ?? 80;
   const r = d.cutoutDiaMm / 2 + 6;
+  if (dv.face === 'down') return { x0: dv.x - r, x1: dv.x + r, y0: dv.y - t / 2 - 2 * (d.xmaxMm || 5) - 25, y1: dv.y + t / 2 + md + 8 };
   return dv.face === 'front'
     ? { x0: W - t - md - 8, x1: W - t, y0: dv.y - r, y1: dv.y + r }
     : { x0: dv.x - t / 2 - md - 8, x1: dv.x + t / 2 + 12, y0: dv.y - r, y1: dv.y + r };
@@ -579,6 +646,21 @@ function basketClearance(core: Pt[], holes: Pt[][], dv: Geometry['driver'], d: D
   const md = d.mountDepthMm ?? 80;
   const r = d.cutoutDiaMm / 2 - 1;
   const air = (x: number, y: number) => !pointInPoly(core, x, y) || holes.some((h) => pointInPoly(h, x, y));
+  if (dv.face === 'down') {
+    // basket + magnet go up from the wall's top face; the cone needs room below
+    const top = dv.y + t / 2;
+    for (let dy = 2; dy <= md; dy += 4)
+      for (let dx = -r; dx <= r; dx += 4) {
+        const rr = dy > 0.55 * md ? d.frameDiaMm / 4 : r;
+        if (Math.abs(dx) > rr) continue;
+        if (!air(dv.x + dx, top + dy)) return `The woofer's ${dy > 0.55 * md ? 'magnet' : 'basket'} runs into print ${Math.round(dy)} mm above its wall — the first channel must be at least ${md} mm tall.`;
+      }
+    const bottom = dv.y - t / 2;
+    const room = 2 * (d.xmaxMm || 5) + 15;
+    for (let dy = 2; dy <= room; dy += 3)
+      for (let dx = -r; dx <= r; dx += 4) if (!air(dv.x + dx, bottom - dy)) return `The cone needs ${Math.round(room)} mm of free air below its wall to move — the second channel is too short.`;
+    return null;
+  }
   const xFace = dv.face === 'front' ? W - t : dv.x - t / 2;
   for (let dx = 2; dx <= md; dx += 4)
     for (let dy = -r; dy <= r; dy += 4) {
@@ -714,7 +796,7 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
   // tweeter in the front wall (living-room 2-ways): its space sits above the woofer
   const tws = tweeterSetup(p);
   const frontTw = tws.mount === 'front' && (p.type === 'sealed' || p.type === 'slot-port' || p.type === 'tl') ? tws.tweeter : null;
-  const twWg = frontTw && tws.waveguide ? roundWaveguide(frontTw, p.coverageDeg || 90, Math.max(3, Math.min(t, 6))) : null;
+  const twWg = frontTw && tws.waveguide ? roundWaveguide(frontTw, p.coverageDeg || 90, Math.max(3, Math.min(t, 6)), p.tweeterXoHz) : null;
   /** radius it takes on the face and behind it, and how deep it reaches from the face */
   const twR = frontTw ? Math.max(twWg ? twWg.flangeR : frontTw.frameDiaMm / 2, twWg ? twWg.R + twWg.wallMm : frontTw.cutoutDiaMm / 2 + 2) : 0;
   const twDepth = frontTw ? (twWg ? twWg.depthMm : 0) + (frontTw.mountDepthMm ?? 35) : 0;
@@ -726,6 +808,10 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
     return { yTw, yW, fits: yW - dia / 2 >= yb + 2 };
   };
   let twY: number | null = null;
+  const bendFlags: boolean[] = [];
+  const foldS: number[] = [];
+  let tapRear = 0;
+  let tapFront: number | undefined;
   const driverRef: { d: Geometry['driver'] | null } = { d: null };
   const convex = (minEdge: number, P: Pt) => {
     if (!inCaps(P)) return 0; // plywood corners stay square
@@ -739,17 +825,32 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
   const nearDriver = (P: Pt, r: number) => {
     const dv = driverRef.d;
     if (!dv) return r;
-    // woofer, and the in-wall tweeter: each a cylinder behind the front
-    // on the front face itself a driver needs its whole frame on flat face, behind it only its cut-out
+    // the space each driver needs, as rectangles in the profile; a fillet at P may only grow
+    // until it reaches them (on the front face a driver needs its whole frame on flat face,
+    // behind it only its cut-out; a tapped horn's driver needs its basket above the wall and
+    // room for the cone below)
     const onFace = P[0] > W - 1;
-    const obs = [
-      { x0: dv.face === 'front' ? W - t - mountDepth - 10 : dv.x - t / 2 - mountDepth - 10, x1: dv.face === 'front' ? W : dv.x + t / 2 + 10, y: dv.y, r: onFace && dv.face === 'front' ? dia / 2 : d.cutoutDiaMm / 2 },
-      ...(twY !== null ? [{ x0: W - twDepth - 10, x1: W, y: twY, r: twR }] : []),
-    ];
+    const rc = d.cutoutDiaMm / 2;
+    const rects: Rect[] = [];
+    if (dv.face === 'down') {
+      const room = 2 * (d.xmaxMm || 8) + 15;
+      rects.push({ x0: dv.x - rc, x1: dv.x + rc, y0: dv.y - t / 2 - room, y1: dv.y + t / 2 + mountDepth });
+      rects.push({ x0: dv.x - dia / 2, x1: dv.x + dia / 2, y0: dv.y - t / 2 - 1, y1: dv.y + t / 2 + 1 });
+    } else {
+      const rr = onFace && dv.face === 'front' ? dia / 2 : rc;
+      rects.push({
+        x0: dv.face === 'front' ? W - t - mountDepth - 10 : dv.x - t / 2 - mountDepth - 10,
+        x1: dv.face === 'front' ? W : dv.x + t / 2 + 10,
+        y0: dv.y - rr,
+        y1: dv.y + rr,
+      });
+    }
+    if (twY !== null) rects.push({ x0: W - twDepth - 10, x1: W, y0: twY - twR, y1: twY + twR });
     let out = r;
-    for (const o of obs) {
-      if (P[0] < o.x0 - r || P[0] > o.x1 + r) continue;
-      out = Math.min(out, Math.max(0, Math.abs(P[1] - o.y) - o.r - 2));
+    for (const q of rects) {
+      const dx = Math.max(q.x0 - P[0], 0, P[0] - q.x1);
+      const dy = Math.max(q.y0 - P[1], 0, P[1] - q.y1);
+      out = Math.min(out, Math.max(0, Math.hypot(dx, dy) - 2));
     }
     return out;
   };
@@ -804,6 +905,68 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
       fits,
       warnings,
     };
+  }
+
+  if (p.type === 'shell') {
+    // curved shell: depthMm = length along the woofer axis, heightMm = diameter;
+    // rounding 1 → ellipsoid (a sphere if length = diameter), 0 → a fuller capsule
+    const sg = shellGeometry({ diaMm: H, lengthMm: W, n: 2 + 4 * (1 - k), wallMm: t }, d);
+    for (const pr of sg.problems) {
+      fits = false;
+      warnings.push(pr);
+    }
+    if (tws.mount === 'front') warnings.push('A round shell has one front pole — the tweeter goes in a pod on top (on a printed saddle), or use a coaxial driver.');
+    const cy = H / 2;
+    // the axial cross-section, for the drawing and the front-face checks
+    const outerTop = sg.section.slice(0, sg.section.findIndex(([r, z]) => r === sg.holeR && z === sg.zFront));
+    const core: Pt[] = [...outerTop.map(([r, z]) => [z, cy + r] as Pt), ...[...outerTop].reverse().map(([r, z]) => [z, cy - r] as Pt)];
+    const innerPts = sg.section.slice(sg.section.findIndex(([r, z]) => r === sg.holeR && z === sg.zFront - t) + 1);
+    const hole: Pt[] = [...innerPts.map(([r, z]) => [z, cy + r] as Pt), ...[...innerPts].reverse().map(([r, z]) => [z, cy - r] as Pt)];
+    holes.push(dedupe(hole));
+    chambers.push({ label: 'Box (net)', volumeL: sg.netL });
+    // diffraction: this rounded front vs a square box with the same front
+    const fq = Array.from({ length: 80 }, (_, i) => 150 * Math.pow(40, i / 79));
+    const ripple = (db: number[]) => Math.max(...db.slice(20)) - Math.min(...db.slice(20));
+    const curved = baffleResponse({ widthMm: 2 * sg.landR + 2 * sg.edgeRadiusMm * 0.5, heightMm: 2 * sg.landR + 2 * sg.edgeRadiusMm * 0.5, driverXmm: sg.landR + sg.edgeRadiusMm * 0.5, driverYmm: sg.landR + sg.edgeRadiusMm * 0.5, edgeRadiusMm: Math.min(sg.edgeRadiusMm, 200), shape: 'ellipse' }, fq);
+    const boxy = baffleResponse({ widthMm: H, heightMm: H, driverXmm: H / 2, driverYmm: H / 2 }, fq);
+    if (sg.netL > 0) {
+      const alpha = d.vasL / sg.netL;
+      const qtc = d.qts * Math.sqrt(1 + alpha);
+      stats.push(
+        { label: 'Net volume', value: `${sg.netL.toFixed(1)} L` },
+        { label: 'Qtc / fc', value: `${qtc.toFixed(2)} / ${(d.fsHz * Math.sqrt(1 + alpha)).toFixed(0)} Hz${qtc > 0.85 ? ' — boomy: make the shell bigger' : qtc < 0.6 ? ' — lean: smaller shell, or EQ' : ''}` },
+        { label: 'Edge diffraction ripple', value: `≈ ${ripple(curved.db).toFixed(1)} dB (a square box with this front: ≈ ${ripple(boxy.db).toFixed(1)} dB) — the front curves away with a ${Math.round(sg.edgeRadiusMm)} mm radius` },
+        { label: 'Internal standing waves', value: `no parallel walls to bounce between; a box of the same volume would ring at ≈ ${Math.round(C / (2 * Math.cbrt(sg.netL / 1000)))} Hz and its multiples` }
+      );
+    }
+    labels.push({ x: W / 2, y: cy, text: 'sealed shell' });
+    const geo: Geometry = {
+      ...base,
+      E: H,
+      Etot: H,
+      cores: 1,
+      coreMm: H,
+      construction: 'full',
+      caps: [],
+      strips: [],
+      dead: [],
+      core: dedupe(core),
+      holes,
+      spans: [],
+      labels,
+      driver: { x: W - t / 2, y: cy, dia, face: 'front' },
+      path: { s: [0], area: [0] },
+      mouthRect: null,
+      dividerCuts: [],
+      tweeter: null,
+      shell: sg,
+      chambers,
+      stats,
+      fits,
+      warnings,
+    };
+    geo.W = sg.zFront;
+    return geo;
   }
 
   if (p.type === 'sealed') {
@@ -1008,6 +1171,69 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
       { label: 'Quarter-wave of the path', value: `${(C / (4 * (L / 1000))).toFixed(0)} Hz` }
     );
     labels.push({ x: (xa + xb) / 2, y: (legs[0].yt + legs[0].yb) / 2, text: 'throat' }, { x: (xa + xb) / 2, y: (legs[N - 1].yt + legs[N - 1].yb) / 2, text: 'mouth leg' });
+  } else if (p.type === 'tapped') {
+    // tapped horn: a horn closed at its throat; the woofer sits on the fold wall between the
+    // first two runs, magnet up into run 0 (near the closed throat), cone down into run 1 —
+    // so its rear feeds the throat and its front feeds the horn one fold further on
+    const N = p.legs % 2 === 0 ? Math.max(p.legs, 2) : p.legs + 1;
+    if (N !== p.legs) warnings.push(`A tapped horn here needs an even number of runs to exit at the front — using ${N}.`);
+    d0 = -1;
+    xa = t;
+    xStart = xb;
+    const legLen = xb - xa;
+    const md = d.mountDepthMm ?? 120;
+    const h0 = Math.max(md + 20, (p.throatRatio * sd) / E);
+    const h1min = 2 * (d.xmaxMm || 8) + 30;
+    // runs 1…N−1 grow geometrically to fill the height
+    const avail = H - 2 * t - h0 - (N - 1) * t;
+    const ht = Math.max(h1min, (p.throatRatio * sd) / E);
+    const sum = (r: number) => Array.from({ length: N - 1 }, (_, i) => ht * r ** i).reduce((a, b) => a + b, 0);
+    let lo = 1;
+    let hi = 4;
+    for (let it = 0; it < 60; it++) {
+      const m = (lo + hi) / 2;
+      if (sum(m) > avail) hi = m;
+      else lo = m;
+    }
+    if (sum(1) > avail) {
+      fits = false;
+      warnings.push('Not enough height for the horn runs — taller cabinet or fewer runs.');
+    }
+    const hs = [h0, ...Array.from({ length: N - 1 }, (_, i) => ht * lo ** i)];
+    legs = stack(hs);
+    const gaps = gapsFor(hs, legLen);
+    gapsUsed = gaps;
+    ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
+    // the woofer near the front on the wall under run 0 (that wall is fixed at the front)
+    const R = d.frameDiaMm / 2;
+    const xd = xb - R - 12;
+    if (xd - R < xa + gaps[0] + 5) {
+      fits = false;
+      warnings.push(`The fold wall is too short for the ${d.frameDiaMm} mm woofer frame — a deeper cabinet.`);
+    }
+    const wallY = legs[0].yb - t / 2;
+    driver = { x: xd, y: wallY, dia, face: 'down' };
+    for (let i = 0; i < N; i++) {
+      seg(s, area, legLen, hs[i] * E, (i < N - 1 ? hs[i + 1] : hs[i]) * E, 6, bendFlags);
+      if (i < N - 1) {
+        const bl = bendLen(hs[i], hs[i + 1]) - (gaps[i] + t);
+        foldS.push(s[s.length - 1] + bl / 2);
+        seg(s, area, bl, hs[i + 1] * E, hs[i + 1] * E, 2, bendFlags, true);
+      }
+    }
+    area.unshift(area[0]);
+    bendFlags.unshift(false);
+    L = s[s.length - 1];
+    tapRear = xb - xd; // along run 0 from the closed front end
+    tapFront = legLen + (bendLen(hs[0], hs[1]) - (gaps[0] + t)) + (xd - xa); // along run 1
+    const St = hs[1] * E;
+    const Sm = hs[N - 1] * E;
+    stats.push(
+      { label: 'Horn path (centre line)', value: `${(L / 1000).toFixed(2)} m, ${N} runs; quarter-wave ≈ ${(C / (4 * (L / 1000))).toFixed(0)} Hz` },
+      { label: 'Taps', value: `rear ${Math.round(tapRear)} mm and front ${Math.round(tapFront)} mm along the path` },
+      { label: 'Throat → mouth', value: `${(St / 100).toFixed(0)} → ${(Sm / 100).toFixed(0)} cm² (${(Sm / sd).toFixed(1)}× the cone)` }
+    );
+    labels.push({ x: (xa + xb) / 2, y: (legs[0].yt + legs[0].yb) / 2, text: 'throat (closed)' }, { x: (xa + xb) / 2, y: (legs[N - 1].yt + legs[N - 1].yb) / 2, text: 'mouth run' });
   } else if (p.type === 'tl') {
     if (E < dia + 6) warnings.push(`The channels (${E} mm wide) are narrower than the driver frame (${dia} mm) — widen the extrusion.`);
     const N = p.legs % 2 === 0 ? p.legs : p.legs + 1;
@@ -1069,10 +1295,37 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
     driver = { x: W - t / 2, y: (legs[0].yt + legs[0].yb) / 2, dia, face: 'front' };
     if (frontTw) twY = H - t - twStack / 2;
     for (let i = 0; i < N; i++) {
-      seg(s, area, legLen, hs[i] * E, (i < N - 1 ? hs[i + 1] : hs[i]) * E);
-      if (i < N - 1) seg(s, area, bendLen(hs[i], hs[i + 1]) - (gaps[i] + t), hs[i + 1] * E, hs[i + 1] * E, 2);
+      seg(s, area, legLen, hs[i] * E, (i < N - 1 ? hs[i + 1] : hs[i]) * E, 6, bendFlags);
+      if (i < N - 1) {
+        const bl = bendLen(hs[i], hs[i + 1]) - (gaps[i] + t);
+        foldS.push(s[s.length - 1] + bl / 2);
+        seg(s, area, bl, hs[i + 1] * E, hs[i + 1] * E, 2, bendFlags, true);
+      }
     }
     area.unshift(area[0]);
+    bendFlags.unshift(false);
+    // offset driver: on the front wall at a front fold (the folds alternate back, front, back…)
+    const fold = Math.max(0, Math.round(p.driverFold ?? 0));
+    if (fold > 0) {
+      const i = 2 * fold - 1; // fold i joins legs i and i+1 at the front
+      if (i < N - 1) {
+        const yc = (legs[i].yt + legs[i + 1].yb) / 2;
+        const room = legs[i].yt - legs[i + 1].yb; // channel + fold wall + channel at the front
+        if (room < d.cutoutDiaMm + 4) {
+          fits = false;
+          warnings.push(`The fold the woofer is moved to is only ${Math.round(room)} mm tall — less than its ${d.cutoutDiaMm} mm cut-out. Fewer legs, or a taller cabinet.`);
+        }
+        if (gaps[i] < mountDepth + 10) {
+          fits = false;
+          warnings.push(`At that fold the wall between the channels ends only ${Math.round(gaps[i])} mm from the front — the woofer's magnet needs ${Math.round(mountDepth + 10)} mm. Fewer legs or a deeper cabinet.`);
+        }
+        driver = { x: W - t / 2, y: yc, dia, face: 'front' };
+        tapRear = foldS[i];
+        labels.push({ x: W - 60, y: yc, text: 'woofer' });
+      } else {
+        warnings.push(`This line has only ${Math.floor((N - 1) / 2)} front fold(s) — the woofer stays at the closed end.`);
+      }
+    }
     L = s[s.length - 1];
     stats.push(
       { label: 'Line length (centre line)', value: `${(L / 1000).toFixed(2)} m` },
@@ -1081,21 +1334,43 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
     );
     labels.push({ x: W / 2, y: (legs[0].yt + legs[0].yb) / 2, text: 'line start' }, { x: W / 2, y: (legs[N - 1].yt + legs[N - 1].yb) / 2, text: 'terminus' });
   } else {
-    // slot-port box: leg 0 is the box itself (behind the driver), then the folded slot
-    const nSlot = p.legs % 2 === 1 ? Math.min(p.legs, 5) : Math.min(p.legs + 1, 5);
+    // slot-port box / back-loaded horn: leg 0 is the box (behind the driver), then a folded
+    // path out to the front — constant for a slot, expanding for a horn
+    const blh = p.type === 'blh';
+    const nSlot = blh ? (p.legs % 2 === 1 ? Math.min(p.legs, 7) : Math.min(p.legs + 1, 7)) : p.legs % 2 === 1 ? Math.min(p.legs, 5) : Math.min(p.legs + 1, 5);
     if (nSlot !== p.legs) warnings.push(`The slot needs an odd number of runs to exit at the front — using ${nSlot}.`);
     d0 = -1;
     xa = t;
     xStart = xb;
     const legLen = xb - xa;
-    const boxH = H - 2 * t - nSlot * (p.slotMm + t);
+    // horn: legs grow geometrically from the throat (throatRatio × cone area) to fill the height
+    let hornHs: number[] = [];
+    let boxH = H - 2 * t - nSlot * (p.slotMm + t);
+    if (blh) {
+      const ht = Math.max(12, (p.throatRatio * sd) / E);
+      boxH = Math.max(dia + 2 * t + twStack, (p.rearChamberL * 1e6) / ((xb - xa) * E));
+      const avail = H - 2 * t - boxH - nSlot * t;
+      let lo = 1;
+      let hi = 4;
+      const sum = (r: number) => Array.from({ length: nSlot }, (_, i) => ht * r ** i).reduce((a, b) => a + b, 0);
+      for (let it = 0; it < 60; it++) {
+        const m = (lo + hi) / 2;
+        if (sum(m) > avail) hi = m;
+        else lo = m;
+      }
+      hornHs = Array.from({ length: nSlot }, (_, i) => ht * lo ** i);
+      if (sum(1) > avail) {
+        fits = false;
+        warnings.push('Not enough height for the horn below the rear chamber — taller cabinet, fewer folds or a smaller rear chamber.');
+      }
+    }
     if (boxH < dia + 2 * t + twStack) {
       fits = false;
       warnings.push(`Not enough height for the woofer${frontTw ? ' and tweeter' : ''} above the folded slot — taller cabinet or fewer slot runs.`);
     }
-    const hs = [Math.max(boxH, 20), ...Array.from({ length: nSlot }, () => p.slotMm)];
+    const hs = [Math.max(boxH, 20), ...(blh ? hornHs : Array.from({ length: nSlot }, () => p.slotMm))];
     legs = stack(hs);
-    const gaps = gapsFor(hs, legLen).map((g, i) => (i === 0 ? Math.min(g, p.slotMm * 1.6) : g));
+    const gaps = gapsFor(hs, legLen).map((g, i) => (i === 0 ? Math.min(g, (blh ? hs[1] : p.slotMm) * 1.6) : g));
     gapsUsed = gaps;
     ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
     {
@@ -1108,20 +1383,49 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
       driver = { x: W - t / 2, y: pl.yW, dia, face: 'front' };
     }
     const Vb = (legLen * boxH * E) / 1e6 - (d.displacementL ?? 0.5) - tweeterDisplacementL(frontTw, twWg);
-    chambers.push({ label: 'Box (net)', volumeL: Vb });
+    chambers.push({ label: blh ? 'Rear chamber (net)' : 'Box (net)', volumeL: Vb });
+    if (blh) {
+      // the horn path: through each leg and fold, growing in area
+      for (let i = 1; i < hs.length; i++) {
+        seg(s, area, legLen, hs[i] * E, (i < hs.length - 1 ? hs[i + 1] : hs[i]) * E, 6, bendFlags);
+        if (i < hs.length - 1) {
+          const bl = bendLen(hs[i], hs[i + 1]) - (gaps[i] + t);
+          foldS.push(s[s.length - 1] + bl / 2);
+          seg(s, area, bl, hs[i + 1] * E, hs[i + 1] * E, 2, bendFlags, true);
+        }
+      }
+      area.unshift(area[0]);
+      bendFlags.unshift(false);
+      L = s[s.length - 1];
+      const St = hs[1] * E;
+      const Sm = hs[hs.length - 1] * E;
+      const fc = (C * Math.log(Sm / St)) / (2 * Math.PI * (L / 1000)) / 2;
+      stats.push(
+        { label: 'Rear chamber', value: `${Vb.toFixed(1)} L` },
+        { label: 'Horn path (centre line)', value: `${(L / 1000).toFixed(2)} m, ${hs.length - 1} runs` },
+        { label: 'Throat → mouth', value: `${(St / 100).toFixed(0)} → ${(Sm / 100).toFixed(0)} cm² (throat ${(St / sd).toFixed(2)}× the cone)` },
+        { label: 'Horn flare cut-off (estimate)', value: `≈ ${fc.toFixed(0)} Hz; below this the horn stops loading the cone` }
+      );
+      labels.push({ x: W / 2, y: (legs[0].yt + legs[0].yb) / 2, text: 'rear chamber' });
+    }
     const Lp = nSlot * legLen + (nSlot - 1) * (bendLen(p.slotMm, p.slotMm) - p.slotMm - t);
-    seg(s, area, Lp, p.slotMm * E, p.slotMm * E, 12);
-    area.unshift(area[0]);
+    if (!blh) {
+      seg(s, area, Lp, p.slotMm * E, p.slotMm * E, 12, bendFlags);
+      area.unshift(area[0]);
+      bendFlags.unshift(false);
+    }
     const Sp = (p.slotMm * E) / 1e6;
     const leff = Lp / 1000 + 0.9 * Math.sqrt(Sp / Math.PI) * 2;
     const fb = (C / (2 * Math.PI)) * Math.sqrt(Sp / ((Vb / 1000) * leff));
-    stats.push(
+    if (!blh) stats.push(
       { label: 'Net box volume', value: `${Vb.toFixed(1)} L` },
       { label: 'Slot port', value: `${p.slotMm} × ${E} mm, ${(Lp / 1000).toFixed(2)} m long (rounded bends)` },
       { label: 'Helmholtz tuning (estimate)', value: `≈ ${fb.toFixed(0)} Hz` }
     );
-    labels.push({ x: W / 2, y: (legs[0].yt + legs[0].yb) / 2, text: 'box' });
-    L = Lp;
+    if (!blh) {
+      labels.push({ x: W / 2, y: (legs[0].yt + legs[0].yb) / 2, text: 'box' });
+      L = Lp;
+    }
   }
   for (const lg of legs) spans.push({ x0: xa, x1: xb, y0: lg.yb, y1: lg.yt });
   const last = legs[legs.length - 1];
@@ -1202,7 +1506,10 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
     spans,
     labels,
     driver: driver!,
-    path: { s, area },
+    path: { s, area, bend: bendFlags.length === s.length ? bendFlags : undefined },
+    foldS,
+    taps: { rearMm: tapRear, frontMm: tapFront },
+    traps: designTraps(p, { s, area }, legs, xa, xb, W, t),
     mouthRect: { x0: W - 1, x1: W, y0: last.yb, y1: last.yt },
     chambers,
     stats,
@@ -1225,6 +1532,141 @@ export interface SimResult {
   /** complex free-field pressure at 1 m per 2.83 V (one cabinet) — for the maps */
   H: Cx[];
   f3: number;
+  // ---- lines and horns (transmission line, back-loaded and tapped horn) ----
+  /** the cone's own output and the line/horn mouth's, at 2.83 V (dB) */
+  coneSpl?: number[];
+  mouthSpl?: number[];
+  /** input impedance (Ω) and group delay (ms) */
+  impedance?: number[];
+  groupDelayMs?: number[];
+  /** peak air speed at the mouth at 2.83 V (m/s) */
+  mouthVelocity?: number[];
+  /** line resonances (impedance peaks, Hz) */
+  resonances?: number[];
+  /** harmonics leaking from the mouth in the passband, etc. */
+  lineWarnings?: string[];
+}
+
+/** Air speed (peak, m/s) above which a port or line mouth starts to sound. */
+export const MOUTH_NOISE_MS = 17;
+
+/**
+ * Lines and horns through the 1D path solver (lineNetwork): the driver's rear
+ * feeds the path at taps.rearMm (a TL's closed end or an offset fold; a BLH's
+ * rear chamber), its front either radiates directly or, in a tapped horn,
+ * feeds the path at taps.frontMm. Traps hang off the path as side branches.
+ */
+function simulateLine(p: HybridParams, d: DriverInfo, g: Geometry, opts: { coupled: number; floor: boolean; f0?: number; f1?: number; n?: number }): SimResult {
+  const { Sd, Cms, Mms, Rms, Bl, Re } = tsToMech(d);
+  const f0 = opts.f0 ?? 15;
+  const f1 = opts.f1 ?? 600;
+  const n = opts.n ?? 90;
+  const freqs = Array.from({ length: n }, (_, i) => f0 * Math.pow(f1 / f0, i / (n - 1)));
+  const N = Math.max(1, opts.coupled);
+  const img = opts.floor ? 2 : 1;
+  const Vin = 2.83;
+  const mouthA = g.mouthRect ? ((g.mouthRect.y1 - g.mouthRect.y0) * g.E) / 1e6 : 1e-3;
+  const stuffing = p.stuffing ?? (p.type === 'tl' ? [{ from: 0, to: 0.5, densityGL: 8 }] : []);
+  const model = {
+    path: g.path,
+    startChamberL: p.type === 'blh' ? (g.chambers[0]?.volumeL ?? 0) : 0,
+    mouthZ: (f: number) => scl(zRad(mouthA * N * img, f), N * img),
+    stuffing,
+    traps: g.traps ?? [],
+  };
+  const tapRear = g.taps?.rearMm ?? 0;
+  const tapFront = p.type === 'tapped' ? g.taps?.frontMm : undefined;
+  const xmax = (d.xmaxMm || 3) / 1000;
+  const Pmax = d.powerW ?? 100;
+  const out = { spl: [] as number[], cone: [] as number[], mouth: [] as number[], exc: [] as number[], max: [] as number[], z: [] as number[], vel: [] as number[], ph: [] as number[], H: [] as Cx[] };
+  const db = (pa: number) => 20 * Math.log10(pa / 20e-6 + 1e-12);
+  for (const f of freqs) {
+    const w = 2 * Math.PI * f;
+    const Zm = cx(Rms, w * Mms - 1 / (w * Cms));
+    const Ze = cx(Re, 0);
+    const sources = [{ atMm: tapRear, q: cx(-Sd) }, ...(tapFront !== undefined ? [{ atMm: tapFront, q: cx(Sd) }] : [])];
+    const sol = solveLine(model, f, sources);
+    const pr = sol.pAtSources[0];
+    const pf = tapFront !== undefined ? sol.pAtSources[1] : scl(zRad(Sd, f), Sd);
+    const Zmot = add(Zm, scl(sub(pf, pr), Sd));
+    const i = div(cx(Vin), add(Ze, div(cx(Bl * Bl), Zmot)));
+    const v = div(scl(i, Bl), Zmot);
+    const Uc = tapFront !== undefined ? cx(0) : scl(v, Sd);
+    const Um = mul(sol.mouthU, v);
+    const U = add(Uc, Um);
+    const k = (w * RHO) / (4 * Math.PI);
+    const pff = mul(cx(0, k), U);
+    out.H.push(pff);
+    out.spl.push(db(cabs(pff) * (opts.floor ? 2 * N : 1)));
+    out.cone.push(db(cabs(Uc) * k * (opts.floor ? 2 * N : 1)));
+    out.mouth.push(db(cabs(Um) * k * (opts.floor ? 2 * N : 1)));
+    out.ph.push(carg(pff));
+    const x = cabs(v) / w;
+    out.exc.push(x * 1000 * Math.SQRT2);
+    const zin = add(Ze, div(cx(Bl * Bl), Zmot));
+    out.z.push(cabs(zin));
+    const vel = (cabs(Um) * Math.SQRT2) / (mouthA * N * img > 0 ? mouthA : 1);
+    out.vel.push(vel);
+    // loudest before Xmax, the power rating or mouth noise, whichever comes first
+    const scaleX = xmax / Math.max(x * Math.SQRT2, 1e-12);
+    const scaleP = Math.sqrt(Pmax / Math.max(cabs(i) ** 2 * Re, 1e-12));
+    const scaleV = vel > 0 ? MOUTH_NOISE_MS / vel : Infinity;
+    out.max.push(out.spl[out.spl.length - 1] + 20 * Math.log10(Math.min(scaleX, scaleP, scaleV)));
+  }
+  // group delay
+  const un = [...out.ph];
+  for (let i = 1; i < un.length; i++) {
+    while (un[i] - un[i - 1] > Math.PI) un[i] -= 2 * Math.PI;
+    while (un[i] - un[i - 1] < -Math.PI) un[i] += 2 * Math.PI;
+  }
+  const gd = freqs.map((_, i) => {
+    const a = Math.max(0, i - 1);
+    const b = Math.min(freqs.length - 1, i + 1);
+    return (-(un[b] - un[a]) / (2 * Math.PI * (freqs[b] - freqs[a]))) * 1000;
+  });
+  // resonances: impedance peaks
+  const resonances: number[] = [];
+  for (let i = 1; i < out.z.length - 1; i++) if (out.z[i] > out.z[i - 1] && out.z[i] >= out.z[i + 1] && out.z[i] > 1.3 * Re) resonances.push(freqs[i]);
+  // harmonics leaking from the mouth: a mouth peak above the line's fundamental, in the passband,
+  // within 6 dB of the cone's output there
+  const lineWarnings: string[] = [];
+  if (p.type === 'tl') {
+    const L = g.path.s[g.path.s.length - 1];
+    const fq = quarterWaveHz(L, mouthA * 1e6, 1);
+    for (let i = 1; i < freqs.length - 1; i++) {
+      const f = freqs[i];
+      if (f < 1.8 * fq || f > 350) continue;
+      if (out.mouth[i] > out.mouth[i - 1] && out.mouth[i] >= out.mouth[i + 1] && out.mouth[i] > out.cone[i] - 6) {
+        const h = Math.round(f / fq);
+        lineWarnings.push(
+          `The line's ${h % 2 ? `${h}${h === 3 ? 'rd' : 'th'} harmonic` : 'resonance'} at ${Math.round(f)} Hz comes out of the terminus only ${(out.cone[i] - out.mouth[i]).toFixed(0)} dB below the cone — it will colour the mid-bass. More stuffing over the first half, an offset driver (at a fold ⅓ along), or a resonance trap tuned to it.`
+        );
+      }
+    }
+  }
+  const ref = [...out.spl.filter((_, i) => freqs[i] > freqs[0] * 3 && freqs[i] < Math.min(freqs[freqs.length - 1], 200))].sort((a, b) => a - b);
+  const top = ref[Math.floor(ref.length * 0.7)] ?? 0;
+  let f3 = freqs[0];
+  for (let i = 0; i < freqs.length; i++)
+    if (out.spl[i] >= top - 3) {
+      f3 = freqs[i];
+      break;
+    }
+  return {
+    freqs,
+    spl: out.spl,
+    excursionMm: out.exc,
+    maxSpl: out.max,
+    H: out.H,
+    f3,
+    coneSpl: out.cone,
+    mouthSpl: out.mouth,
+    impedance: out.z,
+    groupDelayMs: gd,
+    mouthVelocity: out.vel,
+    resonances,
+    lineWarnings,
+  };
 }
 
 function tsToMech(d: DriverInfo) {
@@ -1255,6 +1697,7 @@ function pathMatrix(path: Geometry['path'], f: number, eta: (frac: number) => nu
 }
 
 export function simulate(p: HybridParams, d: DriverInfo, g: Geometry, opts: { coupled: number; floor: boolean; f0?: number; f1?: number; n?: number }): SimResult {
+  if (p.type === 'tl' || p.type === 'blh' || p.type === 'tapped') return simulateLine(p, d, g, opts);
   const { Sd, Cms, Mms, Rms, Bl, Re } = tsToMech(d);
   const Le = 0; // datasheet Le is too inconsistent to matter below ~300 Hz
   const f0 = opts.f0 ?? 15;
@@ -1294,20 +1737,12 @@ export function simulate(p: HybridParams, d: DriverInfo, g: Geometry, opts: { co
         const Uth = div(ptc, Zth);
         return div(Uth, add(mul(M[2], ZmL), M[3]));
       };
-    } else if (p.type === 'tl' || p.type === 'slot-port') {
+    } else if (p.type === 'slot-port') {
       Zf = zRad(Sd, f);
       const ZmL = zRad(Math.max(mouthA, 1e-4), f);
-      const stuffed = p.type === 'tl';
-      const M = pathMatrix(g.path, f, (frac) => (stuffed ? (frac < 0.5 ? 0.12 : 0.03) : 0.02));
+      const M = pathMatrix(g.path, f, () => 0.02);
       const Zin = div(add(mul(M[0], ZmL), M[1]), add(mul(M[2], ZmL), M[3]));
-      if (p.type === 'tl') {
-        Zr = Zin;
-        out = (v) => {
-          const Uin = scl(v, -Sd);
-          const Uend = div(Uin, add(mul(M[2], ZmL), M[3]));
-          return add(scl(v, Sd), Uend);
-        };
-      } else {
+      {
         const Vb = (g.chambers[0]?.volumeL ?? 10) / 1000;
         const Cb = Vb / (RHO * C * C);
         const Zb = inv(cx(1 / ((RHO * C) / Sd * 30), w * Cb));
@@ -1319,7 +1754,7 @@ export function simulate(p: HybridParams, d: DriverInfo, g: Geometry, opts: { co
           return add(scl(v, Sd), Uend);
         };
       }
-    } else if (p.type === 'sealed') {
+    } else if (p.type === 'sealed' || p.type === 'shell') {
       // box compliance with light stuffing losses (a small parallel resistance)
       Zf = zRad(Sd, f);
       const Vb = (g.chambers[0]?.volumeL ?? 10) / 1000;
@@ -1430,6 +1865,43 @@ export function isAir(g: Geometry, x: number, y: number) {
 }
 
 export function planPrint(g: Geometry, pr: Printer): PrintPlan {
+  if (g.shell) {
+    // printed nose-up in bands along the axis, each glued to the next on a printed lip
+    const bedMin = Math.min(pr.bedX, pr.bedY) - 2 * pr.margin;
+    const bedMax = Math.max(pr.bedX, pr.bedY) - 2 * pr.margin;
+    const bands = shellBands(g.shell, pr.maxZ, bedMin, bedMax);
+    const vol = shellVolumeCm3(g.shell);
+    const grams = vol * 1.27;
+    const segments: Segment[] = bands.flatMap((b, i) =>
+      (b.halves ? [1, 2] : [0]).map((h) => ({
+        id: `band ${i + 1}${h ? (h === 1 ? ' left half' : ' right half') : ''}`,
+        tile: `B${i + 1}${h ? (h === 1 ? 'L' : 'R') : ''}`,
+        core: h,
+        x0: b.z0,
+        x1: b.z1,
+        y0: 0,
+        y1: g.H,
+        z0: 0,
+        z1: b.z1 - b.z0,
+        bedW: b.diaMm,
+        bedH: h ? b.diaMm / 2 : b.diaMm,
+        grams: (grams * (b.z1 - b.z0)) / g.shell!.zFront / (h ? 2 : 1),
+      }))
+    );
+    return {
+      rotated: false,
+      usable: [pr.bedX - 2 * pr.margin, pr.bedY - 2 * pr.margin],
+      cutLines: bands.slice(1).map((b) => ({ x1: b.z0, y1: 0, x2: b.z0, y2: g.H })),
+      cutsZ: [],
+      regions: [],
+      segments,
+      keys: [],
+      totalGrams: grams,
+      hours: (vol * 1000) / pr.flow / 3600,
+      solidFraction: 1,
+      layers: Math.ceil(Math.max(...bands.map((b) => b.z1 - b.z0)) / pr.layerH),
+    };
+  }
   const ux = pr.bedX - 2 * pr.margin;
   const uy = pr.bedY - 2 * pr.margin;
   const regions: Rect[] = g.caps.length ? g.caps : [{ x0: 0, x1: g.W, y0: 0, y1: g.H }];
@@ -1589,6 +2061,10 @@ const PLATES = {
   bb18: { name: '18 mm Baltic birch', E: 11.5e9, rho: 680, nu: 0.3 },
   bb12: { name: '12 mm Baltic birch', E: 11.5e9, rho: 680, nu: 0.3 },
   mdf19: { name: '19 mm MDF', E: 3.5e9, rho: 750, nu: 0.25 },
+  /** 2 × 6 mm float glass with a PVB interlayer: stiff and heavy; the interlayer adds damping */
+  glass: { name: '12 mm laminated glass', E: 70e9, rho: 2500, nu: 0.22 },
+  /** cast acrylic: clear, light, poorly damped */
+  acrylic: { name: '10 mm cast acrylic', E: 3.2e9, rho: 1190, nu: 0.37 },
 };
 const PETG = { E: 2.0e9, G: 0.75e9, rho: 1270, nu: 0.38 };
 
@@ -1675,7 +2151,7 @@ export function plateProps(p: HybridParams, pr: Printer): PlateProps {
 
 /** Plate thickness (mm) for the chosen material. */
 export function plateThickness(p: HybridParams, pr: Printer) {
-  return p.plateMaterial === 'sandwich' ? Math.round(sandwichPlate(p.sandwich, pr).tMm * 10) / 10 : p.plateMaterial === 'bb12' ? 12 : p.plateMaterial === 'mdf19' ? 19 : 18;
+  return p.plateMaterial === 'sandwich' ? Math.round(sandwichPlate(p.sandwich, pr).tMm * 10) / 10 : p.plateMaterial === 'bb12' ? 12 : p.plateMaterial === 'mdf19' ? 19 : p.plateMaterial === 'glass' ? 12 : p.plateMaterial === 'acrylic' ? 10 : 18;
 }
 
 /** f11 of a plate panel a × b (m), edges between clamped and simply supported, with core-shear softening. */
@@ -1745,6 +2221,36 @@ export function planPanels(p: HybridParams, g: Geometry, pr: Printer): PanelPlan
 }
 
 export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: PrintPlan, pr: Printer, outdoor: boolean): Issue[] {
+  if (g.shell) {
+    const sh = g.shell;
+    const out: Issue[] = [];
+    const bedMin = Math.min(pr.bedX, pr.bedY) - 2 * pr.margin;
+    const bedMax = Math.max(pr.bedX, pr.bedY) - 2 * pr.margin;
+    const big = plan.segments.filter((sg) => sg.bedW > bedMax || sg.bedH > bedMin);
+    const halves = plan.segments.some((sg) => sg.core > 0);
+    out.push(
+      big.length
+        ? { level: 'bad', title: `The shell is Ø${Math.round(2 * sh.Rmax)} mm — too big for your bed even in half-rings`, body: 'Make it smaller or print it on a bigger printer.' }
+        : { level: 'ok', title: `${plan.segments.length} pieces: ${halves ? 'bands split into half-rings' : 'bands'}, printed nose-up`, body: `Each band (up to ${Math.round(Math.max(...plan.segments.map((sg) => sg.z1)))} mm tall) prints standing on its rim with no support; the curve stays under 45° except at the very back, where a little tree support helps.${halves ? ' Bands wider than the bed print as two half-rings with keyed seam faces — glue the halves first, then the bands.' : ''} Glue with epoxy on a printed 3 mm lip.` }
+    );
+    const lines = p.wallMm / pr.lineWidth;
+    out.push({ level: lines < 3 ? 'warn' : 'ok', title: `Walls ${p.wallMm} mm = ${lines.toFixed(lines % 1 ? 1 : 0)} lines`, body: 'A curved shell is very stiff for its weight (no flat panels to flex), so thin walls are fine; fill with 100 % infill for mass and damping, or pour a little sand-epoxy into the back half.' });
+    out.push({ level: 'ok', title: 'Front land', body: `The woofer sits on a flat Ø${Math.round(2 * sh.landR)} mm land with its Ø${Math.round(2 * sh.holeR)} mm hole printed in. Use heat-set M4 inserts for its screws and foam gasket tape.` });
+    out.push({ level: 'ok', title: 'Stand', body: 'A round shell needs a cradle: print a ring (or use a cork ring for a bowl) under it, or the pedestal shown. Terminals: a small binding-post pair through the back pole; fill with polyester wool through the woofer hole.' });
+    return out;
+  }
+  const extras: Issue[] = [];
+  if (p.plateMaterial === 'glass')
+    extras.push({ level: 'warn', title: 'Laminated-glass side plates', body: 'Very stiff and heavy (good), and the PVB interlayer damps them. Never glue glass straight to the print: seat it on 3 mm closed-cell EPDM gasket in a printed rebate and clamp with through-bolts in rubber sleeves, so the glass can\'t crack from the plastic\'s movement. Have it cut and edge-polished by a glazier, with the bolt holes drilled before toughening/laminating.' });
+  if (p.plateMaterial === 'acrylic')
+    extras.push({ level: 'warn', title: 'Acrylic side plates', body: 'See-through and easy to laser-cut, but light and poorly damped: panel resonances ring. Add a constrained-layer damping strip on the inside where it won\'t show, mount on gasket, and don\'t overtighten (acrylic crazes at the bolts).' });
+  if (!g.shell && p.type !== 'waveguide')
+    extras.push({
+      level: 'ok',
+      title: 'Terminals, stuffing access and seals',
+      body: `Print a boss on the back wall for a pair of binding posts (or a 75 mm terminal cup if the back is wide enough) and seal them with silicone. ${p.type === 'tl' || p.type === 'blh' || p.type === 'tapped' ? 'Stuff the line through the woofer hole before fitting the woofer, or leave one side plate on screws over the stuffed section so you can tune it by ear.' : 'Fill through the woofer hole before fitting it.'} Print a 2 × 2 mm groove round each driver hole and round the plate faces of the core for gasket cord, so every joint seals without relying on glue alone.`,
+    });
+
   const out: Issue[] = [];
   const plate = plateProps(p, pr);
   const passTop = p.type === 'folded-horn' ? 150 : p.type === 'waveguide' ? 20000 : 500;
@@ -1912,6 +2418,7 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
       body: 'The driver sits on an internal wall. Make one side plate removable over the rear chamber (gasket + inserts), or print a driver hatch.',
     });
   for (const w of g.warnings) out.push({ level: g.fits ? 'warn' : 'bad', title: 'Geometry', body: w });
+  out.push(...extras);
   return out;
 }
 
@@ -1984,9 +2491,26 @@ export interface RoundWaveguide {
   wallMm: number;
 }
 
-export function roundWaveguide(tw: DriverInfo, coverageDeg = 90, wallMm = 4): RoundWaveguide {
+export function roundWaveguide(tw: DriverInfo, coverageDeg = 90, wallMm = 4, crossoverHz?: number): RoundWaveguide {
+  // matched to a crossover: grow the mouth until the guide really controls down to 0.8 × it
+  let wg = roundWaveguideSized(tw, coverageDeg, wallMm, crossoverHz);
+  if (crossoverHz) {
+    let grow = 0;
+    while (wg.controlHz > 0.8 * crossoverHz && grow < 60) {
+      grow += 2;
+      wg = roundWaveguideSized(tw, coverageDeg, wallMm, crossoverHz, grow);
+    }
+  }
+  return wg;
+}
+
+function roundWaveguideSized(tw: DriverInfo, coverageDeg: number, wallMm: number, crossoverHz?: number, growMm = 0): RoundWaveguide {
   const r0 = tw.frameDiaMm / 2 + 1;
-  const R = Math.max(80, Math.min(100, r0 + 38));
+  // mouth: by default a size that suits 1.5–2.5 kHz crossovers; with a crossover given, just big
+  // enough that pattern control (Keele: f ≈ 25 000 / (mouth m × angle°)) reaches 0.8 × that
+  const lipTotal = 8;
+  const Rfor = crossoverHz ? 25000 / ((0.8 * crossoverHz) * coverageDeg) * 500 - lipTotal : r0 + 38;
+  const R = Math.max(r0 + 20, Math.min(150, Rfor + growMm));
   const lip = 8;
   const th = (Math.min(Math.max(coverageDeg, 60), 130) / 2) * (Math.PI / 180);
   const zFlare = Math.sqrt(Math.max(R - lip, r0 + 1) ** 2 - r0 * r0) / Math.tan(th);
@@ -2057,7 +2581,7 @@ export function headGeometry(p: HybridParams, tw: DriverInfo | null, woofer: Dri
   const wall = Math.max(4, Math.min(p.wallMm, 8));
   const frame = tw.frameDiaMm;
   const depthT = tw.mountDepthMm ?? 35;
-  const wg = setup.waveguide ? roundWaveguide(tw, p.coverageDeg || 90, wall) : null;
+  const wg = setup.waveguide ? roundWaveguide(tw, p.coverageDeg || 90, wall, p.tweeterXoHz) : null;
   const face = (wg ? 2 * wg.flangeR : frame) + 2 * 14;
   const w = Math.round(face);
   const h = Math.round(face);
@@ -2093,6 +2617,8 @@ export function headGeometry(p: HybridParams, tw: DriverInfo | null, woofer: Dri
 /** A tweeter pod must stand on the flat part of the cabinet top, without overhanging. */
 export function headProblems(h: HeadGeometry, g: Geometry, p: HybridParams): string[] {
   const out: string[] = [];
+  // on a round shell the pod sits on a printed saddle shaped to the curve
+  if (g.shell) return h.w > g.H ? [`The tweeter pod (${h.w} mm wide) is wider than the shell — a smaller pod (no waveguide).`] : out;
   const topW = g.Etot + 2 * p.plateMm;
   if (h.w > topW + 0.5) out.push(`The tweeter pod (${h.w} mm wide) overhangs the ${Math.round(topW)} mm cabinet top — a narrower pod (no waveguide) or a wider cabinet.`);
   if (h.setbackMm + h.d > g.W - 5) out.push(`The tweeter pod (${h.d} mm deep, set back ${h.setbackMm} mm) overhangs the back of the cabinet — a deeper cabinet.`);
@@ -2166,6 +2692,33 @@ export const PRINTED_DESIGNS: PrintedDesign[] = [
     blurb:
       'The sealed monitor with a printed 90° round waveguide around the tweeter, built into the front wall. It narrows the tweeter’s spread to match the woofer’s at the crossover, so the sound reflected from your walls is as smooth as the direct sound — the trick behind many modern studio monitors.',
     params: mon({ type: 'sealed', driverId: 'sb17nrx2c35-8', heightMm: 420, depthMm: 240, extrusionMm: 200, wallMm: 9, legs: 1, dividers: 1, tweeterWaveguide: true }),
+  },
+  {
+    id: 'blh',
+    name: 'Printed back-loaded horn',
+    short: '6.5″ + 1″, folded rear horn, 60 cm',
+    difficulty: 3,
+    blurb:
+      'The back of the woofer drives a small chamber and then a smoothly expanding horn folded five times inside the shell, out through a mouth at the bottom front. The horn makes the woofer’s rear wave useful: about 32 Hz from a 6.5″ in a 60 cm stand-mount — a flare that would be a stack of stepped panels in wood is one smooth curve in print.',
+    params: mon({ type: 'blh', driverId: 'dc160-8', heightMm: 600, depthMm: 360, extrusionMm: 240, wallMm: 9, legs: 5, throatRatio: 0.8, rearChamberL: 4, dividers: 1 }),
+  },
+  {
+    id: 'th-sub',
+    name: 'Printed tapped-horn subwoofer',
+    short: '12″ tapped horn, 80 cm',
+    difficulty: 3,
+    blurb:
+      'A tapped horn: the 12″ woofer sits on a fold wall with its back feeding the closed throat and its front feeding the horn one fold further on, so both sides of the cone drive the same horn. Very efficient, deep bass from a sub-sized box — the expanding six-run path is exactly the kind of shape printing makes easy.',
+    params: mon({ type: 'tapped', driverId: 'rss315hfa-8', heightMm: 800, depthMm: 700, extrusionMm: 300, wallMm: 9, legs: 6, throatRatio: 0.5, dividers: 1, tweeterMount: 'none' }),
+  },
+  {
+    id: 'egg',
+    name: 'Printed curved shell',
+    short: '6.5″ egg, tweeter pod',
+    difficulty: 2,
+    blurb:
+      'A curved, egg-shaped shell — a solid of revolution around the woofer — with the tweeter in a pod on top. No parallel walls inside for standing waves to build up between, and the front curves away so gently that edge diffraction almost disappears: the shapes that measure smoothest and that woodworkers almost never attempt.',
+    params: mon({ type: 'shell', driverId: 'sb17nrx2c35-8', heightMm: 300, depthMm: 380, extrusionMm: 300, wallMm: 6, rounding: 1, dividers: 0, tweeterMount: 'pod' }),
   },
   {
     id: 'line',

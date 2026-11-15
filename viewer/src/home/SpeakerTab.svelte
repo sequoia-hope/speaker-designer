@@ -3,7 +3,11 @@
   import MiniChart from './MiniChart.svelte';
   import Speaker3D from './Speaker3D.svelte';
   import BoxModeler from './BoxModeler.svelte';
+  import { boxSpecOf, driverGuidance, runModel } from './boxModel';
+  import CrossoverCard from './CrossoverCard.svelte';
+  import { baffleStepShelf } from './diffraction';
   import CustomDriverForm from './CustomDriverForm.svelte';
+  import SavedDesigns from './SavedDesigns.svelte';
   import HybridTab from './HybridTab.svelte';
   import { PRINTED_DESIGNS } from './hybrid';
   import { home, saveHome } from './homeState.svelte';
@@ -102,6 +106,29 @@
     `${fmtInFrac(d.w, 8)} W × ${fmtInFrac(d.h, 8)} H × ${fmtInFrac(d.d, 8)} D`;
 
   const r100 = (x: number) => Math.round(x / 100) * 100;
+  // crossover helper: the woofer's on-stand response (its box + this baffle's step), normalised
+  const xo = $derived.by(() => {
+    if (!tweeter) return null;
+    const wy = plan.holes.find((h) => h.kind === 'woofer')?.yMm ?? box.externalMm.h / 2;
+    const baffle = { widthMm: box.externalMm.w, heightMm: box.externalMm.h, driverYmm: wy };
+    const m = runModel({ driver: woofer, count: box.wooferCount, box: boxSpecOf(box), powerW: 1, placement: 'free', baffle, f0: 200, f1: 20000, n: 160 });
+    // normalise to its level on a big baffle (the datasheet condition), so above the baffle
+    // step it sits at 0 dB and the step shows as the −6 dB it really is
+    const half = runModel({ driver: woofer, count: box.wooferCount, box: boxSpecOf(box), powerW: 1, f0: 100, f1: 2000, n: 40 });
+    const k = 2.83 / (20e-6 * Math.pow(10, half.sensitivity283 / 20));
+    const shelf = baffleStepShelf({ ...baffle, driverXmm: baffle.widthMm / 2, edgeRadiusMm: 12 });
+    const dEff = 2 * Math.sqrt(woofer.sdCm2 / 1e4 / Math.PI);
+    const beam = SPEED_OF_SOUND / (Math.PI * dEff);
+    return {
+      freqs: m.freqs,
+      wooferH: m.H.map((h) => ({ re: h.re * k, im: h.im * k })),
+      // woofer's acoustic centre ≈ its voice coil, ~60 % of the mounting depth behind the baffle;
+      // a flush dome's is at its flange — so the tweeter is ahead (negative offset)
+      offset: -0.6 * (woofer.mountDepthMm ?? 75),
+      fc: Math.max(beam * 1.2, tweeter.fsHz * 2.5),
+      shelf,
+    };
+  });
   // pairing advice
   const pairing = $derived.by(() => {
     const out: { cls: string; html: string }[] = [];
@@ -184,6 +211,7 @@
       <p class="small sys-note warn">The Room tab is using the printed hybrid speaker as mains instead. <button class="linklike" onclick={() => (home.hybrid.useLiving = false)}>Use this design</button></p>
     {/if}
   {/if}
+  <SavedDesigns />
 </section>
 {/snippet}
 
@@ -234,6 +262,15 @@
       </button>
     {/each}
   </div>
+  {#if curWoofer}
+    {@const gd = driverGuidance(curWoofer)}
+    <div class="guide" data-testid="driver-guidance">
+      <div class="guide-hd"><b>Which box suits the {curWoofer.model}?</b> <span class="tag verdict">{gd.verdict === 'either' ? 'sealed or ported' : gd.verdict}</span></div>
+      <ul>{#each gd.reasons as r}<li>{r}</li>{/each}</ul>
+      <div class="small muted">EBP {gd.ebp.toFixed(0)} · BL {gd.blTm.toFixed(1)} T·m · Mms {gd.mmsG.toFixed(1)} g · Cms {gd.cmsMmPerN.toFixed(2)} mm/N · Rms {gd.rmsKgS.toFixed(2)} kg/s (derived from the datasheet's Fs, Qes, Qms, Vas, Sd, Re)</div>
+      {#if gd.dataIssues.length}<ul class="small muted">{#each gd.dataIssues as r}<li>{r}</li>{/each}</ul>{/if}
+    </div>
+  {/if}
   {#if driverForm === 'closed'}
     <div class="chips" style="margin-top:8px">
       <button class="chip" onclick={() => (driverForm = 'new')}>＋ Add your own driver</button>
@@ -294,6 +331,13 @@
     {/if}
   </p>
   {#if cur.boxType === 'sealed'}
+    <div class="chips">
+      <span class="small muted" style="align-self:center">Stuffing:</span>
+      {#each [[0, 'None'], [0.5, 'Light'], [1, 'Full']] as [v, lbl]}
+        <button class="chip" class:on={(cur.sealedFill ?? 0) === v} onclick={() => (cur.sealedFill = v as number)}>{lbl}</button>
+      {/each}
+    </div>
+    <p class="small muted" style="margin:2px 0 6px">Polyester fill makes the air behave as if the box were up to ~15 % bigger (so the box shrinks for the same Qtc) and soaks up internal reflections.</p>
     <div class="field">
       <label for="qtc">Target Qtc (box "tightness")</label>
       <span class="val">{cur.targetQtc.toFixed(2)}</span>
@@ -301,8 +345,20 @@
       <input id="qtc" type="range" min="0.5" max="1.0" step="0.01" bind:value={cur.targetQtc} />
     </div>
   {:else}
+    <div class="chips">
+      <span class="small muted" style="align-self:center">Alignment:</span>
+      {#each [['compact', 'Compact (QB3)'], ['flat', 'Flattest (SBB4)'], ['deep', 'Deepest (+1 dB bump)']] as [k, lbl]}
+        <button class="chip" class:on={(cur.ventAlignment ?? 'compact') === k} onclick={() => (cur.ventAlignment = k as typeof cur.ventAlignment)}>{lbl}</button>
+      {/each}
+    </div>
+    <div class="chips">
+      <span class="small muted" style="align-self:center">Port ends:</span>
+      {#each [['one-flanged', 'Plain tube'], ['flanged', 'Flanged both ends'], ['flared', 'Flared (printed / routed)']] as [k, lbl]}
+        <button class="chip" class:on={(cur.portEnds ?? 'one-flanged') === k} onclick={() => (cur.portEnds = k as typeof cur.portEnds)}>{lbl}</button>
+      {/each}
+    </div>
     <div class="field">
-      <label for="vol">Box volume vs. textbook alignment</label>
+      <label for="vol">Box volume vs. the chosen alignment</label>
       <span class="val">{(cur.volumeScale * 100).toFixed(0)} %</span>
       <input id="vol" type="range" min="0.6" max="1.4" step="0.05" bind:value={cur.volumeScale} />
     </div>
@@ -366,7 +422,10 @@
   <button class="btn" style="margin-top:12px; width:100%" onclick={onGoBuild}>See the woodworking plan →</button>
 </section>
 
-<BoxModeler {box} {woofer} />
+<BoxModeler {box} {woofer} wooferYmm={plan.holes.find((h) => h.kind === 'woofer')?.yMm ?? box.externalMm.h / 2} />
+{#if xo && tweeter}
+  <CrossoverCard {woofer} {tweeter} freqs={xo.freqs} wooferH={xo.wooferH} tweeterOffsetMm={xo.offset} suggestedFc={xo.fc} baffleStep={xo.shelf} />
+{/if}
 </div>
 </div>
 
@@ -429,6 +488,22 @@
     flex-wrap: wrap;
     gap: 3px;
     margin-top: 5px;
+  }
+  .guide {
+    margin-top: 8px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-2);
+    font-size: 13px;
+  }
+  .guide ul {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+  .tag.verdict {
+    background: rgba(56, 189, 248, 0.16);
+    color: var(--accent);
   }
   .tag.mine {
     background: rgba(251, 191, 36, 0.16);
