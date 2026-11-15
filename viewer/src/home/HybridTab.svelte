@@ -4,7 +4,7 @@
   import type { Snippet } from 'svelte';
   import { home, printedParams, saveHome } from './homeState.svelte';
   import { allDrivers, findDriver } from './drivers';
-  import { buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
+  import { autoFitAsync, buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, type FitChange, type HybridParams, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
   import { cabinetDims, driverFor } from './hybridModels';
 
   // One printed design ('sub' or a PRINTED_DESIGNS id), shown either as a design
@@ -87,6 +87,26 @@
     dividerColor: p.plateMaterial === 'sandwich' ? plateColor : undefined,
     printSummary: `${plan.segments.length} printed pieces, ≈ ${(plan.totalGrams / 1000).toFixed(1)} kg of filament, ~${plan.hours.toFixed(0)} h — the print plan is on the Build tab.`,
   });
+  // "Make it fit": smallest size change that makes this design buildable, with undo
+  let fitNote = $state<{ changes: FitChange[]; before: HybridParams } | { none: true } | null>(null);
+  let fitting = $state<number | null>(null);
+  async function makeItFit() {
+    if (fitting !== null) return;
+    fitting = 0;
+    const r = await autoFitAsync($state.snapshot(p) as HybridParams, d, $state.snapshot(home.hybrid.printer), (f) => (fitting = f));
+    fitting = null;
+    if (!r) {
+      fitNote = { none: true };
+      return;
+    }
+    const before = $state.snapshot(p) as HybridParams;
+    Object.assign(p, r.params);
+    fitNote = { changes: r.changes, before };
+  }
+  function undoFit() {
+    if (fitNote && 'before' in fitNote) Object.assign(p, fitNote.before);
+    fitNote = null;
+  }
   const title = $derived(isSub ? 'Printed horn sub' : (entry?.name ?? 'Printed speaker'));
   const COLORS = ['#38bdf8', '#34d399', '#f472b6'];
   const sc = $derived(Math.min(1, 520 / Math.max(geo.W, geo.H)));
@@ -101,8 +121,23 @@
       <div class="dimline">
         {mm(dims.w)} W × {mm(dims.h)} H × {mm(dims.d)} D ({inch(dims.w)} × {inch(dims.h)} × {inch(dims.d)}){head ? ` + ${head.h} mm tweeter pod` : ''} · {geo.cores > 1 ? `${geo.cores} printed cores of ${geo.coreMm.toFixed(0)} mm with ${geo.cores - 1} divider${geo.cores > 2 ? 's' : ''}` : `core ${geo.coreMm.toFixed(0)} mm thick`} between two {p.plateMm} mm plates
       </div>
+      {#if fitting !== null}
+        <div class="fitnote" role="status">Finding the smallest change that makes it buildable…</div>
+      {/if}
+      {#if fitNote}
+        <div class="fitnote" role="status">
+          {#if 'none' in fitNote}
+            No size within reach makes this buildable — try a different driver or cabinet type.
+          {:else}
+            <b>Adjusted to fit:</b>
+            {#each fitNote.changes as c, i}{i ? ' · ' : ' '}{c.label} {c.from} → <b>{c.to}</b>{/each}
+            <button class="linklike" onclick={undoFit}>Undo</button>
+          {/if}
+          <button class="linklike" onclick={() => (fitNote = null)} aria-label="Dismiss">✕</button>
+        </div>
+      {/if}
       <div class="s3d-wrap">
-        <Speaker3D printed={model} woofer={d} {tweeter} initialExplode={mode === 'build' ? 0.55 : 0} problems={geo.fits ? [] : geo.warnings} />
+        <Speaker3D printed={model} woofer={d} {tweeter} initialExplode={mode === 'build' ? 0.55 : 0} problems={geo.fits ? [] : geo.warnings} onFix={geo.fits ? null : makeItFit} />
       </div>
     </section>
   </div>
@@ -494,6 +529,30 @@
 </div>
 
 <style>
+  .fitnote {
+    margin: 6px 0;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: rgba(52, 211, 153, 0.12);
+    color: #a7f3d0;
+    font-size: 13px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: center;
+  }
+  .fitnote b {
+    color: #d1fae5;
+  }
+  .linklike {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+  }
   .drv.tw {
     opacity: 0.55;
   }

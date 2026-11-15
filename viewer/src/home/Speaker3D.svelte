@@ -17,6 +17,7 @@
     initialExplode = 0,
     showStand = false,
     problems = [],
+    onFix = null,
   }: {
     plan?: BuildPlan | null;
     printed?: PrintedModel | null;
@@ -27,6 +28,8 @@
     showStand?: boolean;
     /** reasons this design can't be built as drawn (shown over the view) */
     problems?: string[];
+    /** offer to adjust the design until it can be built */
+    onFix?: (() => void) | null;
   } = $props();
 
   let host = $state<HTMLDivElement | null>(null);
@@ -886,6 +889,7 @@
     <div class="problems" role="alert">
       <b>Can't be built as drawn</b>
       <ul>{#each problems as pr}<li>{pr}</li>{/each}</ul>
+      {#if onFix}<button class="fix" onclick={onFix}>Make it fit — adjust the size for me</button>{/if}
     </div>
   {/if}
   {#if info}
@@ -990,6 +994,16 @@
     padding: 8px 11px;
     font-size: 13px;
     color: #fecdd3;
+  }
+  .problems .fix {
+    margin-top: 6px;
+    border: 1px solid #fb7185;
+    background: rgba(244, 63, 94, 0.2);
+    color: #fff1f2;
+    border-radius: 999px;
+    padding: 6px 12px;
+    font: inherit;
+    cursor: pointer;
   }
   .problems b {
     color: #fda4af;

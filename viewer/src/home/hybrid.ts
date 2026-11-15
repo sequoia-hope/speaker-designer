@@ -2189,3 +2189,117 @@ export interface PrintedModel {
   /** one line about the print (pieces, filament, hours) for the part info */
   printSummary: string;
 }
+
+// ---------------------------------------------------------------------------
+// "Make it fit": the smallest change to a design that makes it buildable
+// ---------------------------------------------------------------------------
+
+export interface FitChange {
+  label: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Search nearby designs for one that can be built (geometry fits, no blocking build
+ * issue), changing as little as possible: size changes cost by how much they grow,
+ * fold/divider/rounding changes a small fixed amount, soft warnings and bass far
+ * from the original's add a bit. Candidates are tried cheapest first, so the first
+ * that works is the answer. Returns null if nothing within reach works.
+ */
+export function autoFit(p: HybridParams, d: DriverInfo, pr: Printer): { params: HybridParams; changes: FitChange[] } | null {
+  const it = autoFitSteps(p, d, pr);
+  for (;;) {
+    const r = it.next();
+    if (r.done) return r.value;
+  }
+}
+
+/** autoFit in slices, yielding to the page between them; reports progress 0…1. */
+export async function autoFitAsync(p: HybridParams, d: DriverInfo, pr: Printer, onProgress?: (f: number) => void) {
+  const it = autoFitSteps(p, d, pr);
+  for (;;) {
+    const t0 = performance.now();
+    let r = it.next();
+    while (!r.done && performance.now() - t0 < 40) r = it.next();
+    if (r.done) return r.value;
+    onProgress?.(r.value);
+    await new Promise((ok) => setTimeout(ok, 0));
+  }
+}
+
+function* autoFitSteps(p: HybridParams, d: DriverInfo, pr: Printer): Generator<number, { params: HybridParams; changes: FitChange[] } | null> {
+  const sealedQ = (g: Geometry) => {
+    const st = g.stats.find((x) => x.label === 'Qtc / fc');
+    return st ? parseFloat(st.value) : null;
+  };
+  const tuning = (g: Geometry) => {
+    const st = g.stats.find((x) => /tuning/i.test(x.label));
+    const m = st?.value.match(/≈ (\d+) Hz/);
+    return m ? +m[1] : null;
+  };
+  const g0 = buildGeometry(p, d);
+  const fb0 = tuning(g0);
+  const q0 = sealedQ(g0);
+
+  const scales = [0.9, 1, 1.08, 1.16, 1.25, 1.35, 1.5, 1.7, 1.9];
+  const legsOpts = p.type === 'tl' || p.type === 'folded-horn' || p.type === 'slot-port' ? [p.legs, p.legs - 2, p.legs + 2].filter((x) => x >= 1 && x <= 8) : [p.legs];
+  const divOpts = [...new Set([p.dividers, 0, 1])].filter((x) => x >= 0 && x <= 3);
+  const roundOpts = [...new Set([p.rounding, 0.5, 0])].filter((x) => x <= p.rounding + 1e-9);
+  type Cand = { q: HybridParams; cost: number };
+  const cands: Cand[] = [];
+  const round = (x: number, step: number) => Math.round(x / step) * step;
+  for (const sh of scales)
+    for (const sd of scales)
+      for (const se of scales)
+        for (const legs of legsOpts)
+          for (const dividers of divOpts)
+            for (const rounding of roundOpts) {
+              const q: HybridParams = {
+                ...p,
+                heightMm: round(p.heightMm * sh, 10),
+                depthMm: round(p.depthMm * sd, 10),
+                extrusionMm: round(p.extrusionMm * se, 5),
+                legs,
+                dividers,
+                rounding,
+              };
+              const grow = (a: number, b: number) => Math.abs(Math.log(b / a));
+              const cost =
+                grow(p.heightMm, q.heightMm) +
+                grow(p.depthMm, q.depthMm) +
+                grow(p.extrusionMm, q.extrusionMm) +
+                (legs !== p.legs ? 0.12 * Math.abs(legs - p.legs) / 2 : 0) +
+                (dividers !== p.dividers ? 0.08 : 0) +
+                (rounding !== p.rounding ? 0.15 * (p.rounding - rounding) : 0);
+              cands.push({ q, cost });
+            }
+  cands.sort((a, b) => a.cost - b.cost);
+  let best: { q: HybridParams; score: number } | null = null;
+  for (let ci = 0; ci < cands.length; ci++) {
+    const c = cands[ci];
+    if (best && c.cost >= best.score) break; // nothing cheaper left to find
+    if (c.cost === 0) continue;
+    yield ci / cands.length;
+    const g = buildGeometry(c.q, d);
+    if (!g.fits) continue;
+    if (buildIssues(c.q, g, d, planPrint(g, pr), pr, c.q.type === 'folded-horn').some((i) => i.level === 'bad')) continue;
+    let score = c.cost + 0.25 * g.warnings.length;
+    const q = sealedQ(g);
+    if (q !== null) score += q > 0.9 ? (q - 0.9) * 3 : q < 0.6 ? (0.6 - q) * 3 : q0 !== null ? Math.abs(q - q0) * 0.5 : 0;
+    const fb = tuning(g);
+    if (fb !== null && fb0 !== null) score += Math.abs(Math.log(fb / fb0)) * 1.5;
+    if (!best || score < best.score) best = { q: c.q, score };
+  }
+  if (!best) return null;
+  const changes: FitChange[] = [];
+  const mm = (x: number) => `${Math.round(x)} mm`;
+  const pct = (x: number) => `${Math.round(x * 100)} %`;
+  if (best.q.heightMm !== p.heightMm) changes.push({ label: 'Height', from: mm(p.heightMm), to: mm(best.q.heightMm) });
+  if (best.q.depthMm !== p.depthMm) changes.push({ label: 'Depth', from: mm(p.depthMm), to: mm(best.q.depthMm) });
+  if (best.q.extrusionMm !== p.extrusionMm) changes.push({ label: 'Width between plates', from: mm(p.extrusionMm), to: mm(best.q.extrusionMm) });
+  if (best.q.legs !== p.legs) changes.push({ label: p.type === 'slot-port' ? 'Port folds' : 'Legs', from: `${p.legs}`, to: `${best.q.legs}` });
+  if (best.q.dividers !== p.dividers) changes.push({ label: 'Plywood dividers', from: `${p.dividers}`, to: `${best.q.dividers}` });
+  if (best.q.rounding !== p.rounding) changes.push({ label: 'Organic rounding', from: pct(p.rounding), to: pct(best.q.rounding) });
+  return { params: best.q, changes };
+}

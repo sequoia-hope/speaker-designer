@@ -131,3 +131,22 @@ test('3D view: section position slider; an unbuildable printed design says so', 
   await expect(page.getByLabel('Use this speaker as the living-room mains')).toBeDisabled();
   expect(errors).toEqual([]);
 });
+
+test('printed: "Make it fit" adjusts an unbuildable design until it can be built, with undo', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('./');
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.getByRole('navigation', { name: 'Home Hi-Fi sections' }).getByRole('button', { name: /Speaker/ }).click();
+  await page.locator('.gcard', { hasText: 'Printed waveguide monitor' }).click();
+  await page.getByLabel('Driver', { exact: true }).selectOption('rs180-8');
+  const alert = page.getByRole('alert');
+  await expect(alert).toContainText("Can't be built as drawn");
+  await alert.getByRole('button', { name: /Make it fit/ }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Adjusted to fit' })).toBeVisible({ timeout: 15000 });
+  await expect(alert).toHaveCount(0);
+  await page.getByRole('status').getByRole('button', { name: 'Undo' }).click();
+  await expect(page.getByRole('alert')).toContainText("Can't be built as drawn");
+  expect(errors).toEqual([]);
+});
