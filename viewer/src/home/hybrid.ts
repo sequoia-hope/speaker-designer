@@ -132,6 +132,12 @@ export interface HybridParams {
   rearChamberL: number;
   /** TL: end area / start area */
   taper: number;
+  /**
+   * TL: a custom cross-section along the line instead of the straight taper — the
+   * area (relative to the line's start) at evenly spaced points from the driver
+   * end (first) to the terminus (last). Each leg takes the area at its middle.
+   */
+  tlProfile?: number[] | null;
   /** slot port: slot height (mm) */
   slotMm: number;
   mouth: MouthPlace;
@@ -448,6 +454,28 @@ export function profileProblems(core: Pt[], holes: Pt[][]): string[] {
  * Front-mounted parts must sit fully on solid front face (not over a rounded edge, a
  * port exit or air), their holes inside the printed front, and not on top of each other.
  */
+/** TL area along the line (fraction 0 = driver end … 1 = terminus), relative to the start */
+export function tlAreaAt(p: Pick<HybridParams, 'taper' | 'tlProfile'>, x: number): number {
+  const pr = p.tlProfile;
+  if (!pr || pr.length < 2) return 1 + (p.taper - 1) * x;
+  const f = Math.min(Math.max(x, 0), 1) * (pr.length - 1);
+  const i = Math.min(Math.floor(f), pr.length - 2);
+  const v = pr[i] + (pr[i + 1] - pr[i]) * (f - i);
+  return Math.max(TL_PROFILE_MIN, v);
+}
+export const TL_PROFILE_MIN = 0.15;
+export const TL_PROFILE_MAX = 3;
+
+/** named line shapes (6 points, driver end → terminus) */
+export const TL_SHAPES: { id: string; name: string; hint: string; pts: number[] }[] = [
+  { id: 'straight', name: 'Straight', hint: 'Constant area: the plain quarter-wave pipe.', pts: [1, 1, 1, 1, 1, 1] },
+  { id: 'taper', name: 'Tapered 3:1', hint: 'The classic TL: narrows to a third, smoothing the pipe resonances.', pts: [1, 0.87, 0.73, 0.6, 0.47, 0.33] },
+  { id: 'expo', name: 'Exponential taper', hint: 'Narrows fast near the driver, then levels: strong damping of the upper harmonics.', pts: [1, 0.66, 0.47, 0.36, 0.3, 0.27] },
+  { id: 'voigt', name: 'Voigt-style', hint: 'Starts small and opens out towards the terminus (a tapered quarter-wave pipe the other way round): more output, less smooth.', pts: [0.45, 0.6, 0.8, 1, 1.25, 1.5] },
+  { id: 'expanding', name: 'Expanding', hint: 'Opens up steadily: nearer a horn, more gain, more ripple.', pts: [1, 1.2, 1.45, 1.7, 2, 2.3] },
+  { id: 'mass-loaded', name: 'Constricted end', hint: 'Straight, then a narrow terminus: a mass-loaded line that tunes lower for its length.', pts: [1, 1, 1, 1, 0.55, 0.3] },
+];
+
 export function frontMountProblems(g: Geometry, plateMm: number, woofer: DriverInfo): string[] {
   const out: string[] = [];
   const faceX = g.W - 0.5;
@@ -1243,7 +1271,7 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
     xStart = xb;
     const legLen = xb - xa;
     const S0 = Math.max(sd * 1.1, (dia + 12) * E * 0.6);
-    const hs = Array.from({ length: N }, (_, i) => (S0 * (1 + (p.taper - 1) * ((i + 0.5) / N))) / E);
+    const hs = Array.from({ length: N }, (_, i) => (S0 * tlAreaAt(p, (i + 0.5) / N)) / E);
     hs[0] = Math.max(hs[0], dia + 2 * t);
     // an in-wall tweeter gets its own small sealed compartment above the line, so the
     // line's start stays sized for the woofer (1–3× the cone area)
@@ -1811,6 +1839,13 @@ export interface Printer {
   /** sustained volumetric flow (mm³/s) — ~30 for a 1.2 mm nozzle on a high-flow hot end */
   flow: number;
   filamentDensity: number; // g/cm³
+  /** filament price per kg, infill of the pieces (%), perimeters per wall */
+  pricePerKg: number;
+  infillPct: number;
+  perimeters: number;
+  /** average power draw while printing (W) and electricity price per kWh */
+  watts: number;
+  kwhPrice: number;
 }
 export const DEFAULT_PRINTER: Printer = {
   bedX: 250,
@@ -1822,6 +1857,11 @@ export const DEFAULT_PRINTER: Printer = {
   layerH: 0.8,
   flow: 30,
   filamentDensity: 1.27,
+  pricePerKg: 25,
+  infillPct: 100,
+  perimeters: 2,
+  watts: 180,
+  kwhPrice: 0.3,
 };
 
 export interface Segment {

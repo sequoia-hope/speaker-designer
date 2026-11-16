@@ -5,6 +5,7 @@
   import { designById } from './designs';
   import { printedDesignById } from './hybrid';
   import { downloadBlob } from './exporters';
+  import { validatePoints, type Measurement } from './measurements';
 
   let name = $state('');
   let msg = $state<string | null>(null);
@@ -41,7 +42,7 @@
     saveHome();
   }
   function exportAll() {
-    downloadBlob('speaker-designs.json', JSON.stringify({ format: 'speaker-designer/saved-designs', version: 1, designs: $state.snapshot(home.savedDesigns), customDrivers: $state.snapshot(home.customDrivers) }, null, 2), 'application/json');
+    downloadBlob('speaker-designs.json', JSON.stringify({ format: 'speaker-designer/saved-designs', version: 1, designs: $state.snapshot(home.savedDesigns), customDrivers: $state.snapshot(home.customDrivers), measurements: $state.snapshot(home.measurements) }, null, 2), 'application/json');
   }
   async function importFile(e: Event) {
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
@@ -55,7 +56,13 @@
       // drivers the designs use, if they came along
       const drv = new Set(home.customDrivers.map((x) => x.id));
       for (const d of data.customDrivers ?? []) if (d?.id && !drv.has(d.id)) home.customDrivers.push(d);
-      msg = `Imported ${add.length} design${add.length === 1 ? '' : 's'}.`;
+      // and the measurements (REW / FRD / ZMA imports)
+      const ms = new Set(home.measurements.map((x) => x.id));
+      const addM = (Array.isArray(data.measurements) ? (data.measurements as Measurement[]) : []).filter(
+        (m) => m?.id && !ms.has(m.id) && (m.kind === 'spl' || m.kind === 'impedance') && validatePoints(m.points).length === 0
+      );
+      home.measurements = [...home.measurements, ...addM];
+      msg = `Imported ${add.length} design${add.length === 1 ? '' : 's'}${addM.length ? ` and ${addM.length} measurement${addM.length === 1 ? '' : 's'}` : ''}.`;
       saveHome();
     } catch (err) {
       msg = `Couldn't import that file: ${(err as Error).message}.`;
@@ -84,7 +91,7 @@
     </ul>
   {/if}
   <div class="row">
-    <button class="chip" onclick={exportAll} disabled={!home.savedDesigns.length}>⬇ Export (JSON)</button>
+    <button class="chip" onclick={exportAll} disabled={!home.savedDesigns.length && !home.measurements.length}>⬇ Export (JSON)</button>
     <label class="chip">⬆ Import<input type="file" accept="application/json,.json" onchange={importFile} hidden /></label>
   </div>
   {#if msg}<p class="small muted" role="status">{msg}</p>{/if}

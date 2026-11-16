@@ -41,6 +41,11 @@ export interface XoOpts {
   delayTweeterMs?: number;
   /** treat the tweeter as flat (ignore its own Fs/Qts roll-off) — for reference checks */
   skipTweeterHp?: boolean;
+  /**
+   * measured tweeter response on the same freqs as wooferH (relative: 1 = its
+   * passband level, see measurements.ts). Replaces the ideal Fs/Qts roll-off.
+   */
+  tweeterH?: Complex[] | null;
 }
 
 const cx = (re: number, im = 0): Complex => ({ re, im });
@@ -140,9 +145,11 @@ function tweeterDelayS(o: XoOpts): number {
   return o.tweeterOffsetMm / 1000 / SPEED_OF_SOUND + (o.delayTweeterMs ?? 0) / 1000;
 }
 
-function tweeterAt(f: number, tweeter: DriverInfo, o: XoOpts, gain: number, tauS: number): Complex {
+function tweeterAt(f: number, i: number, tweeter: DriverInfo, o: XoOpts, gain: number, tauS: number): Complex {
   let t = xoHighPass(o.type, o.fcHz, f);
-  if (!o.skipTweeterHp) t = cmul(t, tweeterResponse(tweeter, f));
+  const meas = o.tweeterH?.[i];
+  if (meas) t = cmul(t, meas);
+  else if (!o.skipTweeterHp) t = cmul(t, tweeterResponse(tweeter, f));
   t = cmul(t, cexpj(-2 * Math.PI * f * tauS));
   return cscale(t, o.invertTweeter ? -gain : gain);
 }
@@ -163,7 +170,7 @@ export function twoWaySum(freqs: number[], wooferH: Complex[], woofer: DriverInf
   for (let i = 0; i < freqs.length; i++) {
     const f = freqs[i];
     const w = cmul(xoLowPass(o.type, o.fcHz, f), wooferH[i] ?? cx(1));
-    const t = tweeterAt(f, tweeter, o, gain, tau);
+    const t = tweeterAt(f, i, tweeter, o, gain, tau);
     W.push(w);
     T.push(t);
     S.push(cadd(w, t));
@@ -175,7 +182,7 @@ export function twoWaySum(freqs: number[], wooferH: Complex[], woofer: DriverInf
   if (o.tweeterLevelDb) notes.push(`Tweeter trim ${o.tweeterLevelDb > 0 ? '+' : ''}${o.tweeterLevelDb.toFixed(1)} dB on top of the level match.`);
   if (o.type === 'LR2' && !o.invertTweeter) notes.push('LR2 sections are 180° apart at fc: wire the tweeter inverted or the sum has a deep null at the crossover.');
   if (o.type === 'BW3') notes.push('BW3 sums flat in magnitude with either polarity, but the drivers are 90° apart at fc (lobing tilts up or down).');
-  if (!o.skipTweeterHp && o.fcHz < 2 * tweeter.fsHz)
+  if (!o.skipTweeterHp && !o.tweeterH && o.fcHz < 2 * tweeter.fsHz)
     notes.push(`Crossover at ${o.fcHz.toFixed(0)} Hz is below 2 × the tweeter's Fs (${tweeter.fsHz.toFixed(0)} Hz): its own roll-off and excursion will dominate.`);
   if (Math.abs(tau) > 1e-7)
     notes.push(`Net tweeter delay ${(tau * 1000).toFixed(3)} ms (${o.tweeterOffsetMm.toFixed(0)} mm offset${o.delayTweeterMs ? ` + ${o.delayTweeterMs.toFixed(3)} ms electrical` : ''}).`);
@@ -221,7 +228,7 @@ export function bestTweeterDelayMs(
   const wh = idx.map((i) => wooferH[i] ?? cx(1));
   const lp = fs.map((f, k) => cmul(xoLowPass(o.type, o.fcHz, f), wh[k]));
   const gain = tweeterAcousticGain(woofer, tweeter, o);
-  const base = fs.map((f) => tweeterAt(f, tweeter, { ...o, invertTweeter: false, tweeterOffsetMm: 0, delayTweeterMs: 0 }, gain, 0));
+  const base = idx.map((i) => tweeterAt(freqs[i], i, tweeter, { ...o, invertTweeter: false, tweeterOffsetMm: 0, delayTweeterMs: 0 }, gain, 0));
   const offS = o.tweeterOffsetMm / 1000 / SPEED_OF_SOUND;
   const score = (delayMs: number, inv: boolean) => {
     const tau = offS + delayMs / 1000;

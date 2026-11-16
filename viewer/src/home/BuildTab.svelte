@@ -7,7 +7,7 @@
   import Speaker3D from './Speaker3D.svelte';
   import PanelDrawing from './PanelDrawing.svelte';
   import HybridTab from './HybridTab.svelte';
-  import { plywoodDxf } from './printExport';
+  import { cadStep, cadWaffle, plywoodCadParts, plywoodDxf } from './printExport';
   import { downloadBlob } from './exporters';
   import { PRINTED_DESIGNS } from './hybrid';
 
@@ -46,6 +46,7 @@
 
   // drawing scale: 1 svg unit = 1 mm
   const M = 70; // margin for dimension lines
+  const plyBase = $derived((DESIGNS.find((x) => x.id === home.activeDesign)?.name ?? 'speaker').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase());
 </script>
 {#snippet picker()}
   <label class="pick">
@@ -89,7 +90,11 @@
 <section class="card">
   {@render picker()}
   <h2>Woodworking plan</h2>
-  <button class="chip" style="margin:0 0 8px" onclick={() => downloadBlob(`${(DESIGNS.find((x) => x.id === home.activeDesign)?.name ?? 'speaker').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase()}-panels.dxf`, plywoodDxf(plan), 'application/dxf')}>⬇ Cut sheet (DXF) — every panel with its holes, for a CNC or laser</button>
+  <div class="chips" style="margin:0 0 8px">
+    <button class="chip" onclick={() => downloadBlob(`${plyBase}-panels.dxf`, plywoodDxf(plan), 'application/dxf')}>⬇ Cut sheet (DXF) — every panel with its holes, for a CNC or laser</button>
+    <button class="chip" data-testid="ply-step" onclick={() => downloadBlob(`${plyBase}.step`, cadStep(plywoodCadParts(plan), plyBase), 'model/step')}>⬇ Panels (STEP)</button>
+    <button class="chip" data-testid="ply-waffle" onclick={() => downloadBlob(`${plyBase}.waffle`, cadWaffle(plywoodCadParts(plan), DESIGNS.find((x) => x.id === home.activeDesign)?.name ?? 'Speaker'), 'application/json')}>⬇ Waffle Iron (.waffle)</button>
+  </div>
   <p class="sub">
     {cur.quantity} × {box.alignment.kind} box for the {woofer.brand} {woofer.model}{tweeter ? ` + ${tweeter.model}` : ''},
     in {plan.material.name}. Glued butt-joint construction: every part is a plain rectangle — no angled cuts.

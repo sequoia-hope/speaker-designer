@@ -8,6 +8,7 @@ import { DEFAULT_OUTDOOR, type OutdoorConfig } from './outdoor';
 import { DEFAULT_PRINTER, HYBRID_PRESETS, PRINTED_DESIGNS, type HybridParams, type Printer } from './hybrid';
 import { setCustomDriverSource, type DriverInfo } from './drivers';
 import type { ModelPin } from './boxModel';
+import type { Measurement } from './measurements';
 
 export interface HomeState {
   room: RoomConfig;
@@ -49,6 +50,8 @@ export interface HomeState {
     printer: Printer;
     useOutdoor: boolean;
     useLiving: boolean;
+    /** printed horn sub ('sub', 'th-sub' …) used as the living-room subwoofer; null = a generic sealed sub */
+    roomSubId: string | null;
   };
   /** printed design shown in the Speakers and Build tabs ('sub' or a PRINTED_DESIGNS id); null = the plywood activeDesign */
   activePrint: string | null;
@@ -60,6 +63,8 @@ export interface HomeState {
   modelerPins: ModelPin[];
   /** named saves of designs (plywood settings or printed params) */
   savedDesigns: SavedDesign[];
+  /** imported frequency-response / impedance measurements (REW, .frd, .zma) */
+  measurements: Measurement[];
 }
 
 export interface SavedDesign {
@@ -145,11 +150,13 @@ export function defaultState(): HomeState {
       printer: { ...DEFAULT_PRINTER },
       useOutdoor: false,
       useLiving: false,
+      roomSubId: null,
     },
     stepsDone: {},
     customDrivers: [],
     modelerPins: [],
     savedDesigns: [],
+    measurements: [],
   };
 }
 
@@ -189,6 +196,7 @@ function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
         ),
         livingId: s.hybrid?.livingId ?? (s.hybrid?.living ? 'line' : d.hybrid.livingId),
         printer: { ...d.hybrid.printer, ...(s.hybrid?.printer ?? {}) },
+        roomSubId: typeof s.hybrid?.roomSubId === 'string' ? s.hybrid.roomSubId : null,
       },
       outdoor: { ...d.outdoor, ...(s.outdoor ?? {}), towerDelayOverride: { ...(s.outdoor?.towerDelayOverride ?? {}) } },
       stepsDone: { ...(s.stepsDone ?? {}) },
@@ -196,6 +204,7 @@ function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
       customDrivers: Array.isArray(s.customDrivers) ? s.customDrivers : [],
       modelerPins: Array.isArray(s.modelerPins) ? s.modelerPins : [],
       savedDesigns: Array.isArray(s.savedDesigns) ? s.savedDesigns : [],
+      measurements: Array.isArray(s.measurements) ? s.measurements.filter((m: Measurement) => m && Array.isArray(m.points)) : [],
     };
   } catch {
     return d;

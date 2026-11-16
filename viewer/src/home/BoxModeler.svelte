@@ -2,7 +2,29 @@
   import MiniChart, { type MiniSeries } from './MiniChart.svelte';
   import type { DriverInfo } from './drivers';
   import type { BoxDesign } from './speakerBuild';
-  import { boxLabel, boxSpecOf, f3Of, printedAsModel, runModel, type BoxSpec, type ModelResult, type Placement } from './boxModel';
+  import {
+    PR_PRESETS,
+    bandpassPortLengthMm,
+    boxLabel,
+    boxNetL,
+    boxSpecOf,
+    defaultBandpassTargets,
+    designBandpass4,
+    designBandpass6,
+    f3HighOf,
+    f3Of,
+    hasPort,
+    isBandpass,
+    prMassForTuning,
+    printedAsModel,
+    runModel,
+    suggestPr,
+    type BandpassDesign,
+    type BoxKind,
+    type BoxSpec,
+    type ModelResult,
+    type Placement,
+  } from './boxModel';
   import { portNoiseMs } from './speakerBuild';
   import { home, saveHome } from './homeState.svelte';
 
@@ -31,7 +53,105 @@
     return w < 10 ? Math.round(w * 10) / 10 : Math.round(w);
   });
 
-  const spec = $derived(boxSpecOf(box));
+  // ---- which box: sealed / vented follow (and switch) the woodworking plan above;
+  //      passive radiator and bandpass boxes are modelled here only ----
+  type AltKind = 'pr' | 'bp4' | 'bp6';
+  type BpSpec = Extract<BoxSpec, { kind: 'bp4' | 'bp6' }>;
+  let alt = $state<AltKind | null>(null);
+  const planSpec = $derived(boxSpecOf(box));
+  const kind = $derived<BoxKind>(alt ?? planSpec.kind);
+  const KINDS: [BoxKind, string][] = [
+    ['sealed', 'Sealed box'],
+    ['vented', 'Vented box'],
+    ['pr', 'Passive radiator'],
+    ['bp4', 'Bandpass 4th'],
+    ['bp6', 'Bandpass 6th'],
+  ];
+  const KIND_NAME: Record<BoxKind, string> = { sealed: 'sealed', vented: 'vented', pr: 'passive-radiator', bp4: '4th-order bandpass', bp6: '6th-order bandpass' };
+  function pickKind(k: BoxKind) {
+    if (k === 'sealed' || k === 'vented') {
+      alt = null;
+      const cur = home.designs[home.activeDesign];
+      if (cur && cur.boxType !== k) cur.boxType = k;
+    } else alt = k;
+  }
+  // the woofer (and count) a PR/bandpass setting was made for; a new woofer starts over
+  const key = $derived(`${woofer.id}:${N}`);
+
+  // ---- passive radiator ----
+  type PrUser = { key: string; id: string | null; count: number | null; netL: number | null; fp: number | null };
+  let prUser = $state<PrUser>({ key: '', id: null, count: null, netL: null, fp: null });
+  const prU = $derived<PrUser>(prUser.key === key ? prUser : { key, id: null, count: null, netL: null, fp: null });
+  function setPr(patch: Partial<PrUser>) {
+    prUser = { ...prU, ...patch, key };
+  }
+  const prSug = $derived(suggestPr(woofer, N));
+  const prDev = $derived(PR_PRESETS.find((p) => p.id === prU.id) ?? prSug.pr);
+  const prN = $derived(prU.count ?? prSug.prCount);
+  const prVol = $derived(prU.netL ?? Math.round(box.netVolumeL * 10) / 10);
+  // default tuning: the plan's port tuning if it has one, else Keele's vented rule of thumb 0.42·Fs·Qts^−0.9
+  const prFpDefault = $derived(Math.round(planSpec.kind === 'vented' ? planSpec.fbHz : Math.min(80, Math.max(15, 0.42 * woofer.fsHz * Math.pow(woofer.qts, -0.9)))));
+  const prFp = $derived(prU.fp ?? prFpDefault);
+  const prTune = $derived(prMassForTuning(prVol, prDev, prN, prFp));
+
+  // ---- bandpass: auto-designed for the woofer until you design or edit it ----
+  type BpUser = { key: string; spec: BpSpec; design: BandpassDesign | null; edited: boolean };
+  let bpUser = $state<{ bp4: BpUser | null; bp6: BpUser | null }>({ bp4: null, bp6: null });
+  let bpTarget = $state<{ key: string; lo: number; hi: number } | null>(null);
+  const bpDefaults = $derived(defaultBandpassTargets(woofer));
+  const target = $derived(bpTarget && bpTarget.key === key ? bpTarget : { key, lo: Math.round(bpDefaults.fLowHz), hi: Math.round(bpDefaults.fHighHz) });
+  const bpAuto = $derived.by((): BandpassDesign | null => {
+    if (kind !== 'bp4' && kind !== 'bp6') return null;
+    if (bpUser[kind]?.key === key) return null;
+    const t = { fLowHz: target.lo, fHighHz: target.hi };
+    return kind === 'bp4' ? designBandpass4(woofer, N, t) : designBandpass6(woofer, N, t);
+  });
+  const bpCur = $derived.by((): BpUser | null => {
+    if (kind !== 'bp4' && kind !== 'bp6') return null;
+    const u = bpUser[kind];
+    if (u && u.key === key) return u;
+    return bpAuto ? { key, spec: bpAuto.spec, design: bpAuto, edited: false } : null;
+  });
+  let designing = $state(false);
+  function designBp() {
+    if (kind !== 'bp4' && kind !== 'bp6') return;
+    const k = kind;
+    designing = true;
+    // let the button repaint before the (≈0.1 s) bp6 fit
+    setTimeout(() => {
+      const t = { fLowHz: target.lo, fHighHz: target.hi };
+      const des = k === 'bp4' ? designBandpass4(woofer, N, t) : designBandpass6(woofer, N, t);
+      bpUser[k] = { key, spec: des.spec, design: des, edited: false };
+      designing = false;
+    }, 0);
+  }
+  function setTarget(lo: number, hi: number) {
+    bpTarget = { key, lo, hi: Math.max(hi, Math.round(lo * 1.3)) };
+  }
+  function setBp(patch: Record<string, number>) {
+    if (!bpCur) return;
+    const next = { ...($state.snapshot(bpCur.spec) as BpSpec), ...patch } as BpSpec;
+    bpUser[next.kind] = { key, spec: next, design: bpCur.design, edited: true };
+  }
+  const dia = (a: number) => Math.round(2 * Math.sqrt(a / Math.PI) * 1000); // mm
+  const area = (dMm: number) => Math.PI * (dMm / 2000) ** 2;
+  const num = (e: Event) => +(e.currentTarget as HTMLInputElement).value;
+
+  const spec = $derived.by((): BoxSpec => {
+    if (kind === 'pr') return { kind: 'pr', netL: prVol, pr: prDev, prCount: prN, addedMassG: Math.round(prTune.addedMassG * 10) / 10 };
+    if ((kind === 'bp4' || kind === 'bp6') && bpCur) return bpCur.spec;
+    return planSpec;
+  });
+  const portLens = $derived(
+    spec.kind === 'bp4'
+      ? [{ label: 'Port', len: bandpassPortLengthMm(spec.frontL, spec.fbHz, spec.portAreaM2) }]
+      : spec.kind === 'bp6'
+        ? [
+            { label: 'Front port', len: bandpassPortLengthMm(spec.frontL, spec.fbFrontHz, spec.frontPortAreaM2) },
+            { label: 'Rear port', len: bandpassPortLengthMm(spec.rearL, spec.fbRearHz, spec.rearPortAreaM2) },
+          ]
+        : []
+  );
   const r = $derived(
     runModel({
       driver: woofer,
@@ -47,16 +167,18 @@
       n: 170,
     })
   );
-  const vented = $derived(spec.kind === 'vented');
+  const vented = $derived(hasPort(spec));
+  /** the tuning below which the cone unloads (vented, PR, bp6 rear) — where a high-pass belongs */
+  const unloadHz = $derived(spec.kind === 'vented' ? spec.fbHz : spec.kind === 'pr' ? prTune.fpHz : spec.kind === 'bp6' ? spec.fbRearHz : null);
   // a vented box unloads below tuning, so the useful high-pass sits just under it
   function toggleHp(on: boolean) {
     hpOn = on;
-    if (on) hpHz = spec.kind === 'vented' ? Math.max(10, Math.round(spec.fbHz * 0.8)) : 25;
+    if (on) hpHz = unloadHz ? Math.max(10, Math.round(unloadHz * 0.8)) : 25;
   }
   const PORT_LIMIT = $derived(noise);
   // the Port tab disappears when nothing on screen has a port
   $effect(() => {
-    if (graph === 'port' && !vented && !home.modelerPins.some((p) => p.box.kind === 'vented')) graph = 'spl';
+    if (graph === 'port' && !vented && !home.modelerPins.some((p) => hasPort(p.box))) graph = 'spl';
   });
 
   const pts = (ys: number[]) => r.freqs.map((x, i) => ({ x, y: ys[i] }));
@@ -87,6 +209,8 @@
 
   const excOver = $derived(overRange(r.excursionMm, r.xmaxMm));
   const excPeak = $derived(peak(r.excursionMm));
+  const prPeak = $derived(r.prExcursionMm ? peak(r.prExcursionMm) : null);
+  const prOver = $derived(r.prExcursionMm && r.prXmaxMm != null ? overRange(r.prExcursionMm, r.prXmaxMm) : null);
   const portPeak = $derived(vented ? peak(r.portVelocity) : null);
   const portOver = $derived(vented ? overRange(r.portVelocity, PORT_LIMIT) : null);
   const splAt = (f: number, ys: number[]) => {
@@ -123,7 +247,7 @@
       label: curLabel,
       driver: $state.snapshot(woofer) as DriverInfo,
       count: N,
-      box: { ...spec },
+      box: $state.snapshot(spec) as BoxSpec,
     });
     saveHome();
   }
@@ -154,10 +278,13 @@
     const blue = '#38bdf8';
     const amber = '#fbbf24';
     const red = '#f87171';
+    const violet = '#c084fc';
     const comparing = pinned.length > 0;
-    const others = pinned.filter((p) => graph !== 'port' || p.pin.box.kind === 'vented');
+    const others = pinned.filter((p) => graph !== 'port' || hasPort(p.pin.box));
     const pinSeries: MiniSeries[] = others.map((p) => ({ label: p.pin.label, color: p.color, points: pts(curveOf(p.r, graph)), width: 1.7 }));
     const all = [curveOf(r, graph), ...others.map((p) => curveOf(p.r, graph))].flatMap((ys) => finiteBass(ys));
+    // passive radiators move too: their travel shares the excursion graph
+    const prCurves = graph === 'excursion' ? [r, ...others.map((p) => p.r)].flatMap((x) => (x.prExcursionMm ? finiteBass(x.prExcursionMm) : [])) : [];
     const mainLabel = (what: string) => (comparing ? `This design — ${curLabel}` : what);
     let series: MiniSeries[] = [];
     let yMin = 0;
@@ -177,18 +304,29 @@
         { label: mainLabel('Cone excursion (peak)'), color: blue, points: pts(r.excursionMm) },
         { label: `Xmax ${r.xmaxMm} mm`, color: red, points: flat(r.xmaxMm), dashed: true, width: 1.4 },
       ];
+      if (r.prExcursionMm && r.prXmaxMm != null)
+        series.push(
+          { label: comparing ? 'This design — passive radiator' : 'Passive radiator excursion (peak)', color: violet, points: pts(r.prExcursionMm) },
+          { label: `PR Xmax ${r.prXmaxMm} mm`, color: violet, points: flat(r.prXmaxMm), dashed: true, width: 1.2 }
+        );
       // pinned drivers with a different Xmax get their own limit line
       for (const p of others)
         if (p.r.xmaxMm !== r.xmaxMm) series.push({ label: `Xmax ${p.r.xmaxMm} mm (${p.pin.driver.model})`, color: p.color, points: flat(p.r.xmaxMm), dashed: true, width: 1 });
+      for (const p of others)
+        if (p.r.prExcursionMm) series.push({ label: `${p.pin.label} — passive radiator`, color: p.color, points: pts(p.r.prExcursionMm), dashed: true, width: 1.3 });
       yLabel = 'mm';
-      const xm = Math.max(r.xmaxMm, ...others.map((p) => p.r.xmaxMm));
-      const top = Math.min(Math.max(...all), xm * 4);
+      const xm = Math.max(r.xmaxMm, r.prXmaxMm ?? 0, ...others.map((p) => Math.max(p.r.xmaxMm, p.r.prXmaxMm ?? 0)));
+      const top = Math.min(Math.max(...all, ...prCurves), xm * 4);
       yMax = Math.max(xm * 1.5, top * 1.1);
       yStep = yMax > 20 ? 5 : yMax > 8 ? 2 : 1;
       yMax = Math.ceil(yMax / yStep) * yStep;
     } else if (graph === 'port') {
       series = [
-        ...(vented ? [{ label: mainLabel('Port air speed (peak)'), color: blue, points: pts(r.portVelocity) }] : []),
+        ...(r.ports && r.ports.length > 1
+          ? r.ports.map((pt, k) => ({ label: comparing ? `This design — ${pt.label.toLowerCase()}` : `${pt.label} air speed (peak)`, color: blue, points: pts(pt.velocity), ...(k ? { dashed: true } : {}) }))
+          : vented
+            ? [{ label: mainLabel('Port air speed (peak)'), color: blue, points: pts(r.portVelocity) }]
+            : []),
         { label: `${PORT_LIMIT} m/s: port noise starts`, color: amber, points: flat(PORT_LIMIT), dashed: true, width: 1.4 },
       ];
       yLabel = 'm/s';
@@ -216,12 +354,16 @@
     const row = (label: string, color: string, res: ModelResult, b: BoxSpec, id: string | null) => {
       const ex = finiteBass(res.excursionMm);
       const pv = finiteBass(res.portVelocity);
+      const prx = res.prExcursionMm ? finiteBass(res.prExcursionMm) : [];
       return {
         id,
         label,
         color,
-        netL: b.netL,
+        netL: boxNetL(b),
         f3: f3Of(res),
+        f3High: isBandpass(b) ? f3HighOf(res) : null,
+        prExc: prx.length ? Math.max(...prx) : null,
+        prXmax: res.prXmaxMm ?? null,
         sens: res.sensitivity283,
         max40: splAt(40, res.maxSpl),
         exc: ex.length ? Math.max(...ex) : NaN,
@@ -232,8 +374,21 @@
     return [row(curLabel, '#38bdf8', r, spec, null), ...pinned.map((p) => row(p.pin.label, p.color, p.r, p.pin.box, p.pin.id))];
   });
 
+  const anyPr = $derived(table.some((t) => t.prExc != null));
   const markers = $derived([
-    ...(vented && spec.kind === 'vented' ? [{ x: spec.fbHz, label: 'tuning', color: '#a78bfa' }] : []),
+    ...(spec.kind === 'vented' || spec.kind === 'bp4' ? [{ x: spec.fbHz, label: 'tuning', color: '#a78bfa' }] : []),
+    ...(spec.kind === 'bp6'
+      ? [
+          { x: spec.fbRearHz, label: 'rear tuning', color: '#a78bfa' },
+          { x: spec.fbFrontHz, label: 'front tuning', color: '#a78bfa' },
+        ]
+      : []),
+    ...(spec.kind === 'pr'
+      ? [
+          { x: prTune.fpHz, label: 'tuning', color: '#a78bfa' },
+          { x: prTune.nullHz, label: 'PR null', color: '#64748b' },
+        ]
+      : []),
     ...(hpOn ? [{ x: hpHz, label: 'high-pass', color: '#f472b6' }] : []),
   ]);
 
@@ -247,10 +402,10 @@
   ];
   const HELP: Record<Graph, string> = {
     spl: 'Sound level 1 m in front (pick where it plays above: a big baffle is the datasheet condition; on a stand adds the baffle step from this cabinet\'s real front; near a wall or in a corner adds those reflections). The dashed line is the standard 2.83 V reference; the solid line is your amplifier power, including any high-pass filter.',
-    excursion: 'How far the cone moves (peak). Above the red Xmax line distortion climbs fast; far above it the voice coil can hit the back plate. Vented boxes keep the cone still near tuning but let it flap freely below — that is what the high-pass filter is for.',
-    port: 'Peak air speed in the port. Above ~17 m/s you start to hear chuffing and the port compresses; above ~25–30 m/s it is clearly audible. Fixes: a bigger (or second) port, flared ends, or less power below tuning.',
-    maxspl: 'The loudest this box can play at each frequency before the cone reaches Xmax or the amplifier reaches the woofer’s power rating, whichever comes first. Where it dips, the bass is excursion-limited.',
-    impedance: 'What your amplifier sees. Sealed boxes have one bass peak; vented boxes have two with a dip at the tuning frequency. Keep the minimum above what your amp is rated for.',
+    excursion: 'How far the cone moves (peak). Above the red Xmax line distortion climbs fast; far above it the voice coil can hit the back plate. Vented and passive-radiator boxes keep the cone still near tuning but let it flap freely below — that is what the high-pass filter is for. A passive radiator’s own travel (violet) has its own Xmax.',
+    port: 'Peak air speed in the port. Above ~17 m/s you start to hear chuffing and the port compresses; above ~25–30 m/s it is clearly audible. Fixes: a bigger (or second) port, flared ends, or less power below tuning. In a bandpass all the sound comes out of the port(s), so they work hard across the whole passband.',
+    maxspl: 'The loudest this box can play at each frequency before the cone reaches Xmax, the amplifier reaches the woofer’s power rating, a port gets noisy or a passive radiator reaches its Xmax, whichever comes first. Where it dips, the bass is excursion-limited.',
+    impedance: 'What your amplifier sees. Sealed boxes have one bass peak; vented and passive-radiator boxes have two with a dip at the tuning frequency; a 6th-order bandpass has three. Keep the minimum above what your amp is rated for.',
     delay: 'How much the bass lags behind the rest of the sound. Under ~10–20 ms at 40 Hz is generally inaudible; vented and high-Q boxes have more than sealed, low-Q ones.',
   };
 </script>
@@ -258,8 +413,125 @@
 <section class="card" data-testid="box-modeler">
   <h2>Box modeler</h2>
   <p class="sub">
-    Simulates the {woofer.brand} {woofer.model}{N > 1 ? ` (×${N}, wired in parallel)` : ''} in this {spec.netL.toFixed(0)} L {spec.kind} box, like WinISD: loudness, cone travel{vented ? ', port speed' : ''}, impedance and timing, at a power you choose.
+    Simulates the {woofer.brand} {woofer.model}{N > 1 ? ` (×${N}, wired in parallel)` : ''} in {alt ? 'a' : 'this'} {boxNetL(spec).toFixed(0)} L {KIND_NAME[spec.kind]} box, like WinISD: loudness, cone travel{spec.kind === 'pr' ? ', radiator travel' : ''}{vented ? ', port speed' : ''}, impedance and timing, at a power you choose.
   </p>
+
+  <div class="chips" role="group" aria-label="Box type to model">
+    <span class="small muted" style="align-self:center">Box:</span>
+    {#each KINDS as [k, lbl]}
+      <button class="chip" class:on={kind === k} aria-pressed={kind === k} onclick={() => pickKind(k)}>{lbl}</button>
+    {/each}
+  </div>
+  {#if !alt}
+    <p class="small muted">Sealed and vented follow the woodworking plan above (switching here switches the plan). Passive-radiator and bandpass boxes are modelled here only.</p>
+  {:else if spec.kind === 'pr'}
+    <div class="boxctl" data-testid="pr-controls">
+      <div class="field">
+        <label for="bm-pr">Radiator</label>
+        <select id="bm-pr" value={prDev.id} onchange={(e) => setPr({ id: (e.currentTarget as HTMLSelectElement).value })}>
+          {#each PR_PRESETS as p}
+            <option value={p.id}>{p.name}{p.id === prSug.pr.id ? ' — suggested' : ''}</option>
+          {/each}
+        </select>
+        <span class="hint">Sd {prDev.sdCm2} cm², Mms {prDev.mmsG} g, Cms {prDev.cmsMmPerN} mm/N, Xmax {prDev.xmaxMm} mm — generic values; use your radiator's datasheet when you buy one.</span>
+      </div>
+      <div class="chips">
+        <button class="chip" class:on={prN === 1} onclick={() => setPr({ count: 1 })}>1 radiator</button>
+        <button class="chip" class:on={prN === 2} onclick={() => setPr({ count: 2 })}>2 radiators</button>
+      </div>
+      <div class="field">
+        <label for="bm-prv">Net volume</label>
+        <span class="val">{prVol.toFixed(1)} L</span>
+        <input id="bm-prv" type="range" min="2" max={Math.max(150, Math.round(box.netVolumeL * 3))} step="0.5" value={prVol} oninput={(e) => setPr({ netL: num(e) })} />
+      </div>
+      <div class="field">
+        <label for="bm-prf">Tuning (Fp)</label>
+        <span class="val">{prTune.fpHz.toFixed(0)} Hz</span>
+        <span class="hint">
+          {prTune.addedMassG.toFixed(0)} g added to {prN > 1 ? 'each radiator' : 'the radiator'} · response null at {prTune.nullHz.toFixed(0)} Hz (the loaded radiator's own resonance)
+        </span>
+        <input id="bm-prf" type="range" min="15" max="90" step="1" value={prFp} oninput={(e) => setPr({ fp: num(e) })} />
+      </div>
+      {#if !prTune.reachable}
+        <p class="small warn-text">This radiator is too heavy to tune that high in {prVol.toFixed(0)} L — with no added mass it lands at {prTune.fpHz.toFixed(0)} Hz. Use a lighter or stiffer radiator, or a smaller box.</p>
+      {:else if prTune.overMax}
+        <p class="small warn-text">{prTune.addedMassG.toFixed(0)} g is more than a typical {prDev.name?.split(' ')[0]} radiator takes ({prDev.maxAddedMassG} g) — use a bigger radiator, two, or a larger box.</p>
+      {/if}
+    </div>
+  {:else if bpCur && (spec.kind === 'bp4' || spec.kind === 'bp6')}
+    {@const sp = spec}
+    <div class="boxctl" data-testid="bp-controls">
+      <div class="field">
+        <label for="bm-lo">Passband from</label>
+        <span class="val">{target.lo}–{target.hi} Hz</span>
+        <input id="bm-lo" type="range" min="15" max="150" step="1" value={target.lo} oninput={(e) => setTarget(num(e), target.hi)} />
+      </div>
+      <div class="field">
+        <label for="bm-hi">Passband to</label>
+        <input id="bm-hi" type="range" min="40" max="300" step="1" value={target.hi} oninput={(e) => setTarget(target.lo, num(e))} />
+      </div>
+      <div class="pinbar">
+        <button class="chip" onclick={designBp} disabled={designing} data-testid="bp-design">{designing ? 'Designing…' : 'Design for this passband'}</button>
+        {#if bpCur.design}
+          <span class="small muted">
+            {bpCur.edited ? 'Edited from a design' : 'Designed'} for {bpCur.design.fLowHz.toFixed(0)}–{bpCur.design.fHighHz?.toFixed(0) ?? '?'} Hz (−3 dB){bpCur.design.gainDb != null ? `, ${bpCur.design.gainDb >= 0 ? '+' : ''}${bpCur.design.gainDb.toFixed(1)} dB over the bare woofer` : ''}{bpCur.design.s != null ? ` · S ${bpCur.design.s.toFixed(2)}, Qbp ${bpCur.design.qbp?.toFixed(2)}` : ''}
+          </span>
+        {/if}
+      </div>
+      {#if bpCur.design && !bpCur.edited}
+        {#each bpCur.design.notes as n}
+          <p class="small warn-text">{n}</p>
+        {/each}
+      {/if}
+      <div class="field">
+        <label for="bm-vr">Rear chamber{sp.kind === 'bp4' ? ' (sealed)' : ''}</label>
+        <span class="val">{sp.rearL.toFixed(1)} L</span>
+        <input id="bm-vr" type="range" min="0.5" max={Math.max(100, Math.round(sp.rearL * 2), Math.round(woofer.vasL * N * 3))} step="0.5" value={sp.rearL} oninput={(e) => setBp({ rearL: num(e) })} />
+      </div>
+      <div class="field">
+        <label for="bm-vf">Front chamber (ported)</label>
+        <span class="val">{sp.frontL.toFixed(1)} L</span>
+        <input id="bm-vf" type="range" min="0.5" max={Math.max(100, Math.round(sp.frontL * 2), Math.round(woofer.vasL * N * 3))} step="0.5" value={sp.frontL} oninput={(e) => setBp({ frontL: num(e) })} />
+      </div>
+      {#if sp.kind === 'bp4'}
+        <div class="field">
+          <label for="bm-fb">Front tuning</label>
+          <span class="val">{sp.fbHz.toFixed(0)} Hz</span>
+          <input id="bm-fb" type="range" min="15" max="250" step="1" value={sp.fbHz} oninput={(e) => setBp({ fbHz: num(e) })} />
+        </div>
+        <div class="field">
+          <label for="bm-pd">Port diameter</label>
+          <span class="val">{dia(sp.portAreaM2)} mm</span>
+          <span class="hint">{portLens[0].len > 10 ? `${portLens[0].len.toFixed(0)} mm long` : 'too short to tune this low — use a smaller port'}{portLens[0].len > 700 ? ' — too long to fit; use a slot port or a bigger chamber' : ''}</span>
+          <input id="bm-pd" type="range" min="30" max="250" step="1" value={dia(sp.portAreaM2)} oninput={(e) => setBp({ portAreaM2: area(num(e)) })} />
+        </div>
+      {:else}
+        <div class="field">
+          <label for="bm-fbr">Rear tuning</label>
+          <span class="val">{sp.fbRearHz.toFixed(0)} Hz</span>
+          <input id="bm-fbr" type="range" min="12" max="200" step="1" value={sp.fbRearHz} oninput={(e) => setBp({ fbRearHz: num(e) })} />
+        </div>
+        <div class="field">
+          <label for="bm-fbf">Front tuning</label>
+          <span class="val">{sp.fbFrontHz.toFixed(0)} Hz</span>
+          <input id="bm-fbf" type="range" min="15" max="300" step="1" value={sp.fbFrontHz} oninput={(e) => setBp({ fbFrontHz: num(e) })} />
+        </div>
+        <div class="field">
+          <label for="bm-pdf">Front port diameter</label>
+          <span class="val">{dia(sp.frontPortAreaM2)} mm</span>
+          <span class="hint">{portLens[0].len > 10 ? `${portLens[0].len.toFixed(0)} mm long` : 'too short to tune this low — use a smaller port'}{portLens[0].len > 700 ? ' — too long to fit' : ''}</span>
+          <input id="bm-pdf" type="range" min="30" max="250" step="1" value={dia(sp.frontPortAreaM2)} oninput={(e) => setBp({ frontPortAreaM2: area(num(e)) })} />
+        </div>
+        <div class="field">
+          <label for="bm-pdr">Rear port diameter</label>
+          <span class="val">{dia(sp.rearPortAreaM2)} mm</span>
+          <span class="hint">{portLens[1].len > 10 ? `${portLens[1].len.toFixed(0)} mm long` : 'too short to tune this low — use a smaller port'}{portLens[1].len > 700 ? ' — too long to fit' : ''}</span>
+          <input id="bm-pdr" type="range" min="30" max="250" step="1" value={dia(sp.rearPortAreaM2)} oninput={(e) => setBp({ rearPortAreaM2: area(num(e)) })} />
+        </div>
+      {/if}
+      <p class="small muted">All the sound comes out of the port{sp.kind === 'bp6' ? 's' : ''}: the woofer sits sealed inside{sp.kind === 'bp4' ? ', between a sealed rear chamber and a ported front one' : ', between two ported chambers'}. Total {boxNetL(sp).toFixed(1)} L net, plus the woofer, bracing and ports.</p>
+    </div>
+  {/if}
 
   <div class="field">
     <label for="bm-power">Amplifier power</label>
@@ -289,7 +561,7 @@
       <button class="chip" class:on={placement === k} onclick={() => (placement = k as Placement)}>{lbl}</button>
     {/each}
   </div>
-  {#if spec.kind === 'vented'}
+  {#if vented}
     <div class="field">
       <label for="bm-noise">Port noise threshold</label>
       <span class="val">{noise} m/s</span>
@@ -298,7 +570,7 @@
     </div>
   {/if}
   <div class="chips graphs" role="tablist" aria-label="Box modeler graph">
-    {#each GRAPHS.filter(([g]) => g !== 'port' || vented || pinned.some((p) => p.pin.box.kind === 'vented')) as [g, lbl]}
+    {#each GRAPHS.filter(([g]) => g !== 'port' || vented || pinned.some((p) => hasPort(p.pin.box))) as [g, lbl]}
       <button class="chip" role="tab" aria-selected={graph === g} class:on={graph === g} onclick={() => (graph = g)}>{lbl}</button>
     {/each}
   </div>
@@ -334,17 +606,18 @@
     <div class="cmp-wrap">
       <table class="cmp" data-testid="compare-table">
         <thead>
-          <tr><th>Design</th><th>Net</th><th>F3</th><th>Sens.</th><th>Max @40 Hz</th><th>Peak travel</th><th>Port</th><th></th></tr>
+          <tr><th>Design</th><th>Net</th><th>F3</th><th>Sens.</th><th>Max @40 Hz</th><th>Peak travel</th>{#if anyPr}<th>PR travel</th>{/if}<th>Port</th><th></th></tr>
         </thead>
         <tbody>
           {#each table as t}
             <tr>
               <td><i class="sw" style:background={t.color}></i>{t.id ? t.label : 'This design'}</td>
               <td>{t.netL.toFixed(0)} L</td>
-              <td>{t.f3.toFixed(0)} Hz</td>
+              <td>{t.f3.toFixed(0)}{t.f3High != null ? `–${t.f3High.toFixed(0)}` : ''} Hz</td>
               <td>{t.sens.toFixed(1)} dB</td>
               <td>{t.max40.toFixed(0)} dB</td>
               <td class:over={t.exc > t.xmax}>{t.exc.toFixed(1)} / {t.xmax} mm</td>
+              {#if anyPr}<td class:over={t.prExc != null && t.prXmax != null && t.prExc > t.prXmax}>{t.prExc == null ? '—' : `${t.prExc.toFixed(1)} / ${t.prXmax} mm`}</td>{/if}
               <td class:over={t.port != null && t.port > PORT_LIMIT}>{t.port == null ? '—' : `${t.port.toFixed(0)} m/s`}</td>
               <td>{#if t.id}<button class="x" aria-label={`Remove ${t.label}`} onclick={() => unpin(t.id!)}>×</button>{/if}</td>
             </tr>
@@ -355,13 +628,20 @@
   {/if}
 
   <div class="stats">
-    <div class="stat"><div class="k">Sensitivity</div><div class="v">{r.sensitivity283.toFixed(1)} dB</div><div class="s">2.83 V / 1 m, half space</div></div>
+    <div class="stat"><div class="k">Sensitivity</div><div class="v">{r.sensitivity283.toFixed(1)} dB</div><div class="s">2.83 V / 1 m, half space{isBandpass(spec) ? ' · passband peak' : ''}</div></div>
     <div class="stat"><div class="k">At {fmtW(powerW)} W</div><div class="v">{splAt(100, r.spl).toFixed(0)} dB</div><div class="s">at 100 Hz · {splAt(40, r.spl).toFixed(0)} dB at 40 Hz</div></div>
     <div class="stat">
       <div class="k">Peak cone travel</div>
       <div class="v" class:over={excPeak.y > r.xmaxMm}>{excPeak.y.toFixed(1)} mm</div>
       <div class="s">at {fmtHz(excPeak.f)} · Xmax {r.xmaxMm} mm</div>
     </div>
+    {#if prPeak && r.prXmaxMm != null}
+      <div class="stat">
+        <div class="k">Peak radiator travel</div>
+        <div class="v" class:over={prPeak.y > r.prXmaxMm}>{prPeak.y.toFixed(1)} mm</div>
+        <div class="s">at {fmtHz(prPeak.f)} · Xmax {r.prXmaxMm} mm</div>
+      </div>
+    {/if}
     {#if portPeak}
       <div class="stat">
         <div class="k">Peak port speed</div>
@@ -377,10 +657,13 @@
     {#if excOver}
       <li class="bad">
         At {fmtW(powerW)} W the cone goes past Xmax between {fmtHz(excOver[0])} and {fmtHz(excOver[1])}.
-        {#if vented && !hpOn}Turn on a high-pass just below tuning ({Math.round((spec.kind === 'vented' ? spec.fbHz : 30) * 0.8)} Hz or so) — that's where a vented box unloads.{:else}Use less power, a higher high-pass, or pair it with a subwoofer and cross over above {fmtHz(excOver[1])}.{/if}
+        {#if unloadHz && !hpOn}Turn on a high-pass just below tuning ({Math.round(unloadHz * 0.8)} Hz or so) — that's where a {spec.kind === 'pr' ? 'passive-radiator' : 'vented'} box unloads.{:else}Use less power, a higher high-pass, or pair it with a subwoofer and cross over above {fmtHz(excOver[1])}.{/if}
       </li>
     {:else}
       <li class="good">Cone stays within Xmax everywhere at {fmtW(powerW)} W{hpOn ? ` with the ${hpHz} Hz high-pass` : ''}.</li>
+    {/if}
+    {#if prOver}
+      <li class="bad">The passive radiator goes past its Xmax ({r.prXmaxMm} mm) between {fmtHz(prOver[0])} and {fmtHz(prOver[1])} — use two radiators, a bigger one, or a high-pass just below tuning.</li>
     {/if}
     {#if portOver}
       <li class="warn">Port air reaches {portPeak?.y.toFixed(0)} m/s ({fmtHz(portOver[0])}–{fmtHz(portOver[1])}); expect audible chuffing when played this loud. A larger-diameter or flared port helps.</li>
@@ -393,7 +676,7 @@
     {/if}
   </ul>
   <p class="small muted">
-    Model: Thiele/Small lumped circuit (voice coil, cone, box, port, box leakage Q<sub>L</sub>{spec.kind === 'vented' ? ` ${spec.ql ?? 7}` : ''}). It matches the textbook Small alignment curves within 0.2 dB and the woofers' datasheet sensitivities within ~1.5 dB. No room, no baffle step, no cone breakup — the Room tab adds the room. Voice-coil inductance isn't in the datasheets we have, so impedance above a few hundred Hz reads low.
+    Model: Thiele/Small lumped circuit (voice coil, cone, box, port, box leakage Q<sub>L</sub>{spec.kind === 'vented' ? ` ${spec.ql ?? 7}` : ''}{spec.kind === 'pr' ? '; the passive radiator is a second mass–spring–damper on the box (Hurlburt, JAES 2000)' : ''}{isBandpass(spec) ? '; bandpass chambers in series with the cone, sound from the port(s) only (Dickason’s Loudspeaker Design Cookbook alignment for the 4th-order design)' : ''}). It matches the textbook Small alignment curves within 0.2 dB and the woofers' datasheet sensitivities within ~1.5 dB. No room, no baffle step, no cone breakup — the Room tab adds the room. Voice-coil inductance isn't in the datasheets we have, so impedance above a few hundred Hz reads low.
   </p>
 </section>
 
@@ -458,6 +741,17 @@
   }
   .over {
     color: #f87171 !important;
+  }
+  .boxctl {
+    border-left: 2px solid var(--border);
+    padding-left: 10px;
+    margin: 6px 0 10px;
+  }
+  .boxctl select {
+    max-width: 100%;
+  }
+  .warn-text {
+    color: #fbbf24;
   }
   .toggle {
     display: flex;

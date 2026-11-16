@@ -5,6 +5,8 @@
   import BoxModeler from './BoxModeler.svelte';
   import { boxSpecOf, driverGuidance, runModel } from './boxModel';
   import CrossoverCard from './CrossoverCard.svelte';
+  import MeasurementsCard from './MeasurementsCard.svelte';
+  import { crossoverInputs } from './measurements';
   import { baffleStepShelf } from './diffraction';
   import CustomDriverForm from './CustomDriverForm.svelte';
   import SavedDesigns from './SavedDesigns.svelte';
@@ -108,10 +110,9 @@
   const r100 = (x: number) => Math.round(x / 100) * 100;
   // crossover helper: the woofer's on-stand response (its box + this baffle's step), normalised
   const xo = $derived.by(() => {
-    if (!tweeter) return null;
     const wy = plan.holes.find((h) => h.kind === 'woofer')?.yMm ?? box.externalMm.h / 2;
     const baffle = { widthMm: box.externalMm.w, heightMm: box.externalMm.h, driverYmm: wy };
-    const m = runModel({ driver: woofer, count: box.wooferCount, box: boxSpecOf(box), powerW: 1, placement: 'free', baffle, f0: 200, f1: 20000, n: 160 });
+    const m = runModel({ driver: woofer, count: box.wooferCount, box: boxSpecOf(box), powerW: 1, placement: 'free', baffle, f0: 20, f1: 20000, n: 240 });
     // normalise to its level on a big baffle (the datasheet condition), so above the baffle
     // step it sits at 0 dB and the step shows as the −6 dB it really is
     const half = runModel({ driver: woofer, count: box.wooferCount, box: boxSpecOf(box), powerW: 1, f0: 100, f1: 2000, n: 40 });
@@ -122,13 +123,16 @@
     return {
       freqs: m.freqs,
       wooferH: m.H.map((h) => ({ re: h.re * k, im: h.im * k })),
+      wooferZ: m.impedance,
       // woofer's acoustic centre ≈ its voice coil, ~60 % of the mounting depth behind the baffle;
       // a flush dome's is at its flange — so the tweeter is ahead (negative offset)
       offset: -0.6 * (woofer.mountDepthMm ?? 75),
-      fc: Math.max(beam * 1.2, tweeter.fsHz * 2.5),
+      fc: Math.max(beam * 1.2, (tweeter?.fsHz ?? 0) * 2.5),
       shelf,
     };
   });
+  // imported measurements assigned to the woofer / tweeter replace the simulated / ideal responses
+  const xoIn = $derived(tweeter ? crossoverInputs(home.measurements, woofer, tweeter, xo.freqs, xo.wooferH, xo.offset, xo.fc) : null);
   // pairing advice
   const pairing = $derived.by(() => {
     const out: { cls: string; html: string }[] = [];
@@ -423,9 +427,10 @@
 </section>
 
 <BoxModeler {box} {woofer} wooferYmm={plan.holes.find((h) => h.kind === 'woofer')?.yMm ?? box.externalMm.h / 2} />
-{#if xo && tweeter}
-  <CrossoverCard {woofer} {tweeter} freqs={xo.freqs} wooferH={xo.wooferH} tweeterOffsetMm={xo.offset} suggestedFc={xo.fc} baffleStep={xo.shelf} />
+{#if xoIn && tweeter}
+  <CrossoverCard {woofer} tweeter={xoIn.tweeter} freqs={xo.freqs} wooferH={xoIn.wooferH} tweeterOffsetMm={xoIn.tweeterOffsetMm} suggestedFc={xo.fc} baffleStep={xo.shelf} tweeterH={xoIn.tweeterH} sources={xoIn.sources} measNotes={xoIn.notes} />
 {/if}
+<MeasurementsCard {woofer} {tweeter} freqs={xo.freqs} wooferH={xo.wooferH} wooferZ={xo.wooferZ} suggestedFc={xo.fc} tweeterOffsetMm={xo.offset} />
 </div>
 </div>
 

@@ -10,11 +10,12 @@
 
 import * as THREE from 'three';
 import pc from 'polygon-clipping';
-import type { Geometry, HeadGeometry, HybridParams, Pt, PrintPlan, RoundWaveguide } from './hybrid';
+import type { Geometry, HeadGeometry, HybridParams, Printer, Pt, PrintPlan, RoundWaveguide } from './hybrid';
 import type { DriverInfo } from './drivers';
 import type { BuildPlan } from './speakerBuild';
 import { meshesToStl, panelsToDxf, type DxfPanel } from './exporters';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { layOut, recipeVolume, writeStep, writeWaffle, type CadPart, type Loop2, type Recipe } from './cad';
 
 type Ring = [number, number][];
 const ring = (poly: Pt[]): Ring => [...poly.map(([x, y]) => [x, y] as [number, number]), [poly[0][0], poly[0][1]]];
@@ -68,9 +69,12 @@ function shapeOf(poly: Ring[]): THREE.Shape {
 }
 
 /** A closed solid of revolution for a waveguide insert (axis = +z, face at z = depth). */
-function waveguideSolid(wg: RoundWaveguide): THREE.BufferGeometry {
+function waveguideSection(wg: RoundWaveguide): [number, number][] {
   const D = wg.depthMm;
-  const sec: [number, number][] = [...wg.profile, [wg.flangeR, D], [wg.flangeR, D - 3], [wg.R + wg.wallMm, D - 3], [wg.profile[0][0] + wg.wallMm, 0], [wg.profile[0][0], 0]];
+  return [...wg.profile, [wg.flangeR, D], [wg.flangeR, D - 3], [wg.R + wg.wallMm, D - 3], [wg.profile[0][0] + wg.wallMm, 0], [wg.profile[0][0], 0]];
+}
+function waveguideSolid(wg: RoundWaveguide): THREE.BufferGeometry {
+  const sec = waveguideSection(wg);
   const g = new THREE.LatheGeometry(
     sec.map(([r, z]) => new THREE.Vector2(r, z)),
     96
@@ -82,7 +86,13 @@ function waveguideSolid(wg: RoundWaveguide): THREE.BufferGeometry {
 export interface PrintPiece {
   name: string;
   geometry: THREE.BufferGeometry;
+  /** the exact solid, for STEP / Waffle Iron (same frame as `geometry`) */
+  recipe: Recipe;
+  rotX90?: boolean;
 }
+
+const polyLoop = (r: Ring): Loop2 => ({ kind: 'poly', pts: open(r) });
+const rectLoop = (x0: number, y0: number, x1: number, y1: number): Loop2 => ({ kind: 'poly', pts: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]] });
 
 /** Every printed piece of a design, in mm, each sitting on z = 0 (its print orientation). */
 export function printPieces(g: Geometry, p: HybridParams, plan: PrintPlan, woofer: DriverInfo, head: HeadGeometry | null): PrintPiece[] {
@@ -108,10 +118,10 @@ export function printPieces(g: Geometry, p: HybridParams, plan: PrintPlan, woofe
             return x;
           }))!;
         }
-        out.push({ name: seg.id, geometry: geo });
+        out.push({ name: seg.id, geometry: geo, recipe: { kind: 'revolve', section: pts.map((v) => [v.x, v.y]), phi0: half ? (seg.core - 1) * Math.PI : 0, sweep: half ? Math.PI : Math.PI * 2 } });
       }
     }
-    if (head) out.push(...printPiecesHeadOnly(head));
+    if (head) out.push(...podPieces(head));
     return out;
   }
   const solid = printedProfile(g, woofer);
@@ -120,7 +130,11 @@ export function printPieces(g: Geometry, p: HybridParams, plan: PrintPlan, woofe
     clip.forEach((poly, i) => {
       if (Math.abs(poly[0].length) < 4) return;
       const geo = new THREE.ExtrudeGeometry(shapeOf(poly), { depth: seg.z1 - seg.z0, bevelEnabled: false, curveSegments: 6 });
-      out.push({ name: `core ${seg.core + 1} ${seg.tile}${clip.length > 1 ? `-${i + 1}` : ''}`, geometry: geo });
+      out.push({
+        name: `core ${seg.core + 1} ${seg.tile}${clip.length > 1 ? `-${i + 1}` : ''}`,
+        geometry: geo,
+        recipe: { kind: 'prism', outer: polyLoop(poly[0]), holes: poly.slice(1).map(polyLoop), depth: seg.z1 - seg.z0 },
+      });
     });
   }
   // the driver's wall: a flat plate with its holes (prints flat)
@@ -135,7 +149,11 @@ export function printPieces(g: Geometry, p: HybridParams, plan: PrintPlan, woofe
     if (g.driver.face === 'down') {
       const sh = new THREE.Shape([new THREE.Vector2(-g.Etot / 2, w.x0), new THREE.Vector2(g.Etot / 2, w.x0), new THREE.Vector2(g.Etot / 2, w.x1), new THREE.Vector2(-g.Etot / 2, w.x1)]);
       sh.holes.push(holeFor(g.driver.x, woofer.cutoutDiaMm / 2));
-      out.push({ name: 'woofer wall', geometry: new THREE.ExtrudeGeometry(sh, { depth: t, bevelEnabled: false, curveSegments: 64 }) });
+      out.push({
+        name: 'woofer wall',
+        geometry: new THREE.ExtrudeGeometry(sh, { depth: t, bevelEnabled: false, curveSegments: 64 }),
+        recipe: { kind: 'prism', outer: rectLoop(-g.Etot / 2, w.x0, g.Etot / 2, w.x1), holes: [{ kind: 'circle', c: [0, g.driver.x], r: woofer.cutoutDiaMm / 2 }], depth: t },
+      });
     } else {
       // solid stretches of the profile at that depth, the full width between the plates
       const xm = (w.x0 + w.x1) / 2;
@@ -146,47 +164,42 @@ export function printPieces(g: Geometry, p: HybridParams, plan: PrintPlan, woofe
         if (s && y0 === null) y0 = y;
         if (!s && y0 !== null) {
           const sh = new THREE.Shape([new THREE.Vector2(-g.Etot / 2, y0), new THREE.Vector2(g.Etot / 2, y0), new THREE.Vector2(g.Etot / 2, y), new THREE.Vector2(-g.Etot / 2, y)]);
+          const circles: Loop2[] = [];
           const cut = (cy: number, r: number) => {
-            if (cy - r > y0! && cy + r < y) sh.holes.push(holeFor(cy, r));
+            if (cy - r > y0! && cy + r < y) {
+              sh.holes.push(holeFor(cy, r));
+              circles.push({ kind: 'circle', c: [0, cy], r });
+            }
           };
           cut(g.driver.y, woofer.cutoutDiaMm / 2);
           if (g.tweeter && g.driver.face === 'front') cut(g.tweeter.y, g.tweeter.holeR);
-          out.push({ name: `front wall ${Math.round(y0)}–${y} mm`, geometry: new THREE.ExtrudeGeometry(sh, { depth: w.x1 - w.x0, bevelEnabled: false, curveSegments: 64 }) });
+          out.push({
+            name: `front wall ${Math.round(y0)}–${y} mm`,
+            geometry: new THREE.ExtrudeGeometry(sh, { depth: w.x1 - w.x0, bevelEnabled: false, curveSegments: 64 }),
+            recipe: { kind: 'prism', outer: rectLoop(-g.Etot / 2, y0, g.Etot / 2, y), holes: circles, depth: w.x1 - w.x0 },
+          });
           y0 = null;
         }
       }
     }
   }
-  if (g.tweeter?.waveguide) out.push({ name: 'waveguide insert', geometry: waveguideSolid(g.tweeter.waveguide) });
-  if (head) {
-    const r = Math.min(head.w, head.h) * 0.32;
-    const sh = new THREE.Shape();
-    const [x0, y0, x1, y1] = [-head.w / 2, -head.h / 2, head.w / 2, head.h / 2];
-    sh.moveTo(x0 + r, y0);
-    sh.lineTo(x1 - r, y0);
-    sh.absarc(x1 - r, y0 + r, r, -Math.PI / 2, 0, false);
-    sh.lineTo(x1, y1 - r);
-    sh.absarc(x1 - r, y1 - r, r, 0, Math.PI / 2, false);
-    sh.lineTo(x0 + r, y1);
-    sh.absarc(x0 + r, y1 - r, r, Math.PI / 2, Math.PI, false);
-    sh.lineTo(x0, y0 + r);
-    sh.absarc(x0 + r, y0 + r, r, Math.PI, Math.PI * 1.5, false);
-    const hole = new THREE.Path();
-    hole.absarc(0, 0, head.waveguide ? head.waveguide.R + head.waveguide.wallMm : head.tweeterCutoutMm / 2, 0, Math.PI * 2, true);
-    sh.holes.push(hole);
-    out.push({ name: 'tweeter pod (shell)', geometry: new THREE.ExtrudeGeometry(sh, { depth: head.d, bevelEnabled: false, curveSegments: 24 }) });
-    if (head.waveguide) out.push({ name: 'pod waveguide', geometry: waveguideSolid(head.waveguide) });
-  }
+  if (g.tweeter?.waveguide) out.push(waveguidePiece('waveguide insert', g.tweeter.waveguide));
+  if (head) out.push(...podPieces(head));
   for (const tr of g.traps ?? []) {
     const body = new THREE.CylinderGeometry(tr.diaMm / 2, tr.diaMm / 2, tr.lenMm, 64);
     body.rotateX(Math.PI / 2);
     body.translate(0, 0, tr.lenMm / 2);
-    out.push({ name: `trap ${tr.harmonic}${tr.harmonic === 3 ? 'rd' : 'th'} harmonic`, geometry: body });
+    out.push({ name: `trap ${tr.harmonic}${tr.harmonic === 3 ? 'rd' : 'th'} harmonic`, geometry: body, recipe: { kind: 'prism', outer: { kind: 'circle', c: [0, 0], r: tr.diaMm / 2 }, holes: [], depth: tr.lenMm } });
   }
   return out;
 }
 
-function printPiecesHeadOnly(head: HeadGeometry): PrintPiece[] {
+function waveguidePiece(name: string, wg: RoundWaveguide): PrintPiece {
+  return { name, geometry: waveguideSolid(wg), recipe: { kind: 'revolve', section: waveguideSection(wg), phi0: 0, sweep: Math.PI * 2 }, rotX90: true };
+}
+
+/** the separate tweeter pod (a rounded block with the tweeter / waveguide hole) and its waveguide */
+function podPieces(head: HeadGeometry): PrintPiece[] {
   const r = Math.min(head.w, head.h) * 0.32;
   const sh = new THREE.Shape();
   const [x0, y0, x1, y1] = [-head.w / 2, -head.h / 2, head.w / 2, head.h / 2];
@@ -199,11 +212,104 @@ function printPiecesHeadOnly(head: HeadGeometry): PrintPiece[] {
   sh.absarc(x0 + r, y1 - r, r, Math.PI / 2, Math.PI, false);
   sh.lineTo(x0, y0 + r);
   sh.absarc(x0 + r, y0 + r, r, Math.PI, Math.PI * 1.5, false);
+  const outline = sh.getPoints(12).map((v) => [v.x, v.y] as [number, number]);
+  const holeR = head.waveguide ? head.waveguide.R + head.waveguide.wallMm : head.tweeterCutoutMm / 2;
   const hole = new THREE.Path();
-  hole.absarc(0, 0, head.waveguide ? head.waveguide.R + head.waveguide.wallMm : head.tweeterCutoutMm / 2, 0, Math.PI * 2, true);
+  hole.absarc(0, 0, holeR, 0, Math.PI * 2, true);
   sh.holes.push(hole);
-  const out: PrintPiece[] = [{ name: 'tweeter pod (shell)', geometry: new THREE.ExtrudeGeometry(sh, { depth: head.d, bevelEnabled: false, curveSegments: 24 }) }];
-  if (head.waveguide) out.push({ name: 'pod waveguide', geometry: waveguideSolid(head.waveguide) });
+  const out: PrintPiece[] = [
+    {
+      name: 'tweeter pod (shell)',
+      geometry: new THREE.ExtrudeGeometry(sh, { depth: head.d, bevelEnabled: false, curveSegments: 24 }),
+      recipe: { kind: 'prism', outer: { kind: 'poly', pts: outline }, holes: [{ kind: 'circle', c: [0, 0], r: holeR }], depth: head.d },
+    },
+  ];
+  if (head.waveguide) out.push(waveguidePiece('pod waveguide', head.waveguide));
+  return out;
+}
+
+export interface PieceEstimate {
+  name: string;
+  grams: number;
+  hours: number;
+  heightMm: number;
+}
+export interface PrintEstimate {
+  pieces: PieceEstimate[];
+  grams: number;
+  /** metres of 1.75 mm filament */
+  metres: number;
+  hours: number;
+  filamentCost: number;
+  energyCost: number;
+  longest: PieceEstimate;
+}
+
+function meshArea(g: THREE.BufferGeometry) {
+  const geo = g.index ? g.toNonIndexed() : g;
+  const p = geo.getAttribute('position');
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  let s = 0;
+  for (let i = 0; i < p.count; i += 3) {
+    a.fromBufferAttribute(p, i);
+    b.fromBufferAttribute(p, i + 1).sub(a);
+    c.fromBufferAttribute(p, i + 2).sub(a);
+    s += b.cross(c).length() / 2;
+  }
+  return s;
+}
+
+/**
+ * Filament, time and cost for every printed piece. Each piece's solid volume
+ * (from its exact recipe) splits into a skin — perimeters on the walls, solid
+ * layers top and bottom, ≈ surface area × skin thickness — and the inside at
+ * the infill percentage. Skins print at ~60 % of the hot end's flow (slower
+ * outer walls), infill at full flow, plus 15 % for travel and a few seconds a
+ * layer; each piece is its own print with ~6 min to heat and level.
+ */
+export function printEstimate(pieces: PrintPiece[], pr: Printer): PrintEstimate {
+  const skinMm = Math.max(pr.perimeters, 1) * pr.lineWidth;
+  const flow = Math.max(pr.flow, 1);
+  const est = pieces.map((pc_) => {
+    const vol = recipeVolume(pc_.recipe);
+    const skin = Math.min(vol, (meshArea(pc_.geometry) / 2) * skinMm);
+    const inside = vol - skin;
+    const printed = skin + inside * Math.min(Math.max(pr.infillPct, 0), 100) / 100;
+    pc_.geometry.computeBoundingBox();
+    const bb = pc_.geometry.boundingBox!;
+    const heightMm = bb.max.z - bb.min.z;
+    const layers = heightMm / Math.max(pr.layerH, 0.05);
+    const seconds = (skin / (flow * 0.6) + (printed - skin) / flow) * 1.15 + layers * 4 + 360;
+    return { name: pc_.name, grams: (printed / 1000) * pr.filamentDensity, hours: seconds / 3600, heightMm };
+  });
+  const grams = est.reduce((a, e) => a + e.grams, 0);
+  const hours = est.reduce((a, e) => a + e.hours, 0);
+  return {
+    pieces: est,
+    grams,
+    metres: grams / pr.filamentDensity / (Math.PI * 0.875 ** 2),
+    hours,
+    filamentCost: (grams / 1000) * pr.pricePerKg,
+    energyCost: ((hours * pr.watts) / 1000) * pr.kwhPrice,
+    longest: est.reduce((a, e) => (e.hours > a.hours ? e : a), est[0] ?? { name: '', grams: 0, hours: 0, heightMm: 0 }),
+  };
+}
+
+/** A quick test print: a ring the driver's cut-out size, to check the fit before printing a cabinet. */
+export function fitTestPieces(woofer: DriverInfo, wallMm: number, tweeterHoleR?: number): PrintPiece[] {
+  const ring = (name: string, r: number): PrintPiece => {
+    const sh = new THREE.Shape();
+    sh.absarc(0, 0, r + 12, 0, Math.PI * 2, false);
+    const h = new THREE.Path();
+    h.absarc(0, 0, r, 0, Math.PI * 2, true);
+    sh.holes.push(h);
+    const t = Math.max(3, Math.min(wallMm, 6));
+    return { name, geometry: new THREE.ExtrudeGeometry(sh, { depth: t, bevelEnabled: false, curveSegments: 96 }), recipe: { kind: 'prism', outer: { kind: 'circle', c: [0, 0], r: r + 12 }, holes: [{ kind: 'circle', c: [0, 0], r }], depth: t } };
+  };
+  const out = [ring(`woofer fit ring (${woofer.cutoutDiaMm} mm)`, woofer.cutoutDiaMm / 2)];
+  if (tweeterHoleR) out.push(ring(`tweeter fit ring (${Math.round(tweeterHoleR * 2)} mm)`, tweeterHoleR));
   return out;
 }
 
@@ -246,12 +352,16 @@ export function printPiecesStl(pieces: PrintPiece[]): ArrayBuffer {
   return meshesToStl(group, { mmPerUnit: 1 });
 }
 
-/** DXF of a printed design's flat parts: the two outer plates, dividers (with their cut-outs) and plywood strips. */
-export function platesDxf(g: Geometry, p: HybridParams, woofer: DriverInfo): string {
-  const panels: DxfPanel[] = [];
-  if (g.shell) return panelsToDxf([{ name: 'no flat parts', outline: [[0, 0], [10, 0], [10, 10], [0, 10]], notes: ['a curved shell has no plates'] }]);
+type ThickPanel = DxfPanel & { thickMm: number; material: string };
+const PLATE_CAD_MATERIAL: Record<string, string> = { bb18: 'Birch plywood', bb12: 'Birch plywood', mdf19: 'MDF', glass: 'Laminated glass', acrylic: 'Acrylic', sandwich: 'Birch plywood' };
+
+/** a printed design's flat parts: the two outer plates, dividers (with their cut-outs) and plywood strips */
+function platePanels(g: Geometry, p: HybridParams, woofer: DriverInfo): ThickPanel[] {
+  const panels: ThickPanel[] = [];
+  if (g.shell) return panels;
+  const mat = PLATE_CAD_MATERIAL[p.plateMaterial] ?? 'Birch plywood';
   const outline = plateOutline(g.W, g.H).map(([x, y]) => [x, g.H - y] as [number, number]);
-  for (const side of ['left', 'right']) panels.push({ name: `side plate ${side}`, outline, notes: [`${p.plateMm} mm ${p.plateMaterial}`] });
+  for (const side of ['left', 'right']) panels.push({ name: `side plate ${side}`, outline, notes: [`${p.plateMm} mm ${p.plateMaterial}`], thickMm: p.plateMm, material: mat });
   if (g.cores > 1) {
     const w = driverWallRect(g, woofer);
     const div = pc.difference([ring(plateOutline(g.W, g.H))], ...g.dividerCuts.map((c) => [ring(c)] as Ring[]), [rectRing(w.x0, w.x1, w.y0, w.y1)]);
@@ -261,19 +371,53 @@ export function platesDxf(g: Geometry, p: HybridParams, woofer: DriverInfo): str
         outline: open(poly[0]).map(([x, y]) => [x, g.H - y] as [number, number]),
         polyHoles: poly.slice(1).map((h) => open(h).map(([x, y]) => [x, g.H - y] as [number, number])),
         notes: ['notched round the drivers; windows keep each chamber one volume'],
+        thickMm: p.plateMm,
+        material: mat,
       })
     );
   }
   for (const st of g.strips) {
     const L = st.lengthMm;
-    panels.push({ name: `${st.name} (x${st.qty})`, outline: [[0, 0], [L, 0], [L, st.widthMm], [0, st.widthMm]], notes: [`${st.thickMm} mm plywood`] });
+    panels.push({ name: `${st.name} (x${st.qty})`, outline: [[0, 0], [L, 0], [L, st.widthMm], [0, st.widthMm]], notes: [`${st.thickMm} mm plywood`], thickMm: st.thickMm, material: 'Birch plywood' });
   }
-  return panelsToDxf(panels, { gapMm: 20 });
+  return panels;
 }
 
-/** DXF of a plywood design's panels, with the baffle and back-panel holes in place. */
-export function plywoodDxf(plan: BuildPlan): string {
-  const panels: DxfPanel[] = [];
+/** DXF of a printed design's flat parts: the two outer plates, dividers (with their cut-outs) and plywood strips. */
+export function platesDxf(g: Geometry, p: HybridParams, woofer: DriverInfo): string {
+  if (g.shell) return panelsToDxf([{ name: 'no flat parts', outline: [[0, 0], [10, 0], [10, 10], [0, 10]], notes: ['a curved shell has no plates'] }]);
+  return panelsToDxf(platePanels(g, p, woofer), { gapMm: 20 });
+}
+
+function panelPart(pn: ThickPanel): CadPart {
+  return {
+    name: pn.name,
+    material: pn.material,
+    recipe: {
+      kind: 'prism',
+      outer: { kind: 'poly', pts: pn.outline },
+      holes: [...(pn.holes ?? []).map((h) => ({ kind: 'circle', c: [h.x, h.y], r: h.r }) as Loop2), ...(pn.polyHoles ?? []).map((h) => ({ kind: 'poly', pts: h }) as Loop2)],
+      depth: pn.thickMm,
+    },
+  };
+}
+
+/** every part of a printed design as an exact solid: printed pieces (PETG) then the flat parts, laid out */
+export function printedCadParts(pieces: PrintPiece[], g: Geometry, p: HybridParams, woofer: DriverInfo, filament = 'PETG'): CadPart[] {
+  return layOut([...pieces.map((pc_) => ({ name: pc_.name, recipe: pc_.recipe, rotX90: pc_.rotX90, material: filament })), ...platePanels(g, p, woofer).map(panelPart)]);
+}
+
+/** a plywood design's panels as exact solids, laid out flat */
+export function plywoodCadParts(plan: BuildPlan): CadPart[] {
+  return layOut(plywoodPanels(plan).map(panelPart), 25);
+}
+
+export const cadStep = (parts: CadPart[], name: string) => writeStep(parts, `${name}.step`);
+export const cadWaffle = (parts: CadPart[], name: string) => writeWaffle(parts, name);
+
+/** a plywood design's panels with the baffle and back-panel holes in place */
+function plywoodPanels(plan: BuildPlan): ThickPanel[] {
+  const panels: ThickPanel[] = [];
   const box = plan.box;
   for (const pn of plan.panels) {
     const W = pn.widthMm;
@@ -294,7 +438,12 @@ export function plywoodDxf(plan: BuildPlan): string {
       if (box.port) for (const rp of box.rearPorts) holes.push({ x: W - rp.xMm, y: L - rp.yMm, r: (box.port.diameterMm + 4) / 2 });
     }
     const notes = [`${pn.thicknessMm} mm, ${pn.qtyPerBox} per speaker`, ...(isBaffle ? ['rebates: see the baffle drawing'] : [])];
-    panels.push({ name: pn.name, outline, holes, polyHoles, notes });
+    panels.push({ name: pn.name, outline, holes, polyHoles, notes, thickMm: pn.thicknessMm, material: pn.materialId.startsWith('mdf') ? 'MDF' : 'Birch plywood' });
   }
-  return panelsToDxf(panels, { gapMm: 25 });
+  return panels;
+}
+
+/** DXF of a plywood design's panels, with the baffle and back-panel holes in place. */
+export function plywoodDxf(plan: BuildPlan): string {
+  return panelsToDxf(plywoodPanels(plan), { gapMm: 25 });
 }

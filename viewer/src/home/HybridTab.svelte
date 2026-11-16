@@ -1,12 +1,13 @@
 <script lang="ts">
   import MiniChart from './MiniChart.svelte';
   import Speaker3D from './Speaker3D.svelte';
-  import { platesDxf, printPieces, printPiecesStl } from './printExport';
+  import { cadStep, cadWaffle, fitTestPieces, platesDxf, printEstimate, printedCadParts, printPieces, printPiecesStl } from './printExport';
   import { downloadBlob } from './exporters';
   import type { Snippet } from 'svelte';
   import { home, printedParams, saveHome } from './homeState.svelte';
   import { allDrivers, findDriver } from './drivers';
   import { trapTuningHz } from './lineNetwork';
+  import TlProfileEditor from './TlProfileEditor.svelte';
   import { printedAsModel, runModel } from './boxModel';
   import { autoFitAsync, MOUTH_NOISE_MS, buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, type FitChange, type HybridParams, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
   import { cabinetDims, driverFor } from './hybridModels';
@@ -128,6 +129,21 @@
     if (on) set.add(h);
     else set.delete(h);
     p.trapHarmonics = [...set].sort();
+  }
+  // every printed piece (only built when the build view is open)
+  const pieces = $derived(mode === 'build' && geo.fits ? printPieces(geo, p, plan, d, head) : []);
+  const est = $derived(pieces.length ? printEstimate(pieces, home.hybrid.printer) : null);
+  const fmtH = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : h < 48 ? `${h.toFixed(1)} h` : `${(h / 24).toFixed(1)} days`);
+  let cadErr = $state<string | null>(null);
+  function cadDownload(kind: 'step' | 'waffle') {
+    cadErr = null;
+    try {
+      const parts = printedCadParts(pieces, geo, p, d);
+      if (kind === 'step') downloadBlob(`${fileBase}.step`, cadStep(parts, fileBase), 'model/step');
+      else downloadBlob(`${fileBase}.waffle`, cadWaffle(parts, entry?.name ?? fileBase), 'application/json');
+    } catch (e) {
+      cadErr = (e as Error).message;
+    }
   }
   const fileBase = $derived((entry?.name ?? (isSub ? 'printed-horn-sub' : 'printed-speaker')).replace(/[^A-Za-z0-9]+/g, '-').toLowerCase());
   // comparison pins (shared with the plywood box modeler), shown at 2.83 V / 1 m full space here
@@ -430,11 +446,20 @@
           <button class="chip" class:on={p.mouth === 'corner'} onclick={() => (p.mouth = 'corner')}>Corner (4 couple)</button>
         </div>
       {:else if p.type === 'tl'}
-        <div class="field">
-          <label for="h-tap">Line taper (end / start area)</label><span class="val">{p.taper.toFixed(2)}{p.taper > 1 ? ' — expanding' : p.taper < 1 ? ' — tapering' : ' — straight'}</span>
-          <span class="hint">Below 1 the line narrows towards the terminus (classic tapered line); above 1 it opens up (an expanding line, nearer a horn).</span>
-          <input id="h-tap" type="range" min="0.2" max="2.5" step="0.05" bind:value={p.taper} />
+        <div class="chips" style="margin:6px 0">
+          <span class="small muted" style="align-self:center">Line shape:</span>
+          <button class="chip" class:on={!p.tlProfile} onclick={() => (p.tlProfile = null)}>Simple taper</button>
+          <button class="chip" class:on={!!p.tlProfile} data-testid="tl-custom" onclick={() => (p.tlProfile = p.tlProfile ?? Array.from({ length: 6 }, (_, i) => +(1 + (p.taper - 1) * (i / 5)).toFixed(2)))}>Custom cross-section</button>
         </div>
+        {#if !p.tlProfile}
+          <div class="field">
+            <label for="h-tap">Line taper (end / start area)</label><span class="val">{p.taper.toFixed(2)}{p.taper > 1 ? ' — expanding' : p.taper < 1 ? ' — tapering' : ' — straight'}</span>
+            <span class="hint">Below 1 the line narrows towards the terminus (classic tapered line); above 1 it opens up (an expanding line, nearer a horn).</span>
+            <input id="h-tap" type="range" min="0.2" max="2.5" step="0.05" bind:value={p.taper} />
+          </div>
+        {:else}
+          <TlProfileEditor bind:profile={p.tlProfile} legs={p.legs % 2 === 0 ? p.legs : p.legs + 1} path={geo.path} />
+        {/if}
         <div class="field">
           <label for="h-fold">Woofer position along the line</label>
           <span class="val">{(p.driverFold ?? 0) === 0 ? 'at the closed end' : `at front fold ${p.driverFold} (≈ ${Math.round((geo.taps?.rearMm ?? 0) / Math.max(1, geo.path.s[geo.path.s.length - 1]) * 100)} % along)`}</span>
@@ -562,20 +587,43 @@
       <div class="chips" style="margin-bottom:8px">
         <button class="chip" onclick={() => downloadBlob(`${fileBase}-print-pieces.stl`, printPiecesStl(printPieces(geo, p, plan, d, head)), 'model/stl')} disabled={!geo.fits}>⬇ Print pieces (STL)</button>
         <button class="chip" onclick={() => downloadBlob(`${fileBase}-plates.dxf`, platesDxf(geo, p, d), 'application/dxf')} disabled={!geo.fits}>⬇ Plates &amp; dividers (DXF)</button>
+        <button class="chip" data-testid="cad-step" onclick={() => cadDownload('step')} disabled={!geo.fits}>⬇ All parts (STEP)</button>
+        <button class="chip" data-testid="cad-waffle" onclick={() => cadDownload('waffle')} disabled={!geo.fits}>⬇ Waffle Iron (.waffle)</button>
+        <button class="chip" onclick={() => downloadBlob(`${fileBase}-fit-test.stl`, printPiecesStl(fitTestPieces(d, geo.wallMm, geo.tweeter && geo.driver.face === 'front' ? geo.tweeter.holeR : undefined)), 'model/stl')}>⬇ Driver fit-test ring (STL)</button>
       </div>
+      {#if cadErr}<p class="small bad" role="alert">Couldn't write the CAD file: {cadErr}</p>{/if}
+      <p class="small muted" style="margin-top:0">STEP and .waffle hold every printed piece and every flat part as an exact solid (true circles and cones, not a mesh), named and laid out side by side in millimetres — open the STEP in any CAD program, or the .waffle in Waffle Iron, where each part is an editable sketch + extrude/revolve with its material (so it reports masses). The fit-test ring is a 15-minute print of the driver's cut-out: check the driver drops in before printing the cabinet.</p>
       <p class="small muted" style="margin-top:0">The STL holds every piece as the plan splits it, laid out side by side in millimetres (your slicer can split them into objects). The front wall prints flat as its own plate — its round holes then need no support — and glues to the cores.</p>
       <div class="bedin">
-        {#each [['bedX', 'Bed X', 1], ['bedY', 'Bed Y', 1], ['maxZ', 'Max Z', 1], ['margin', 'Margin', 1], ['nozzle', 'Nozzle', 0.1], ['lineWidth', 'Line width', 0.05], ['layerH', 'Layer', 0.05], ['flow', 'Flow mm³/s', 1]] as [k, lbl, st]}
-          {@const key = k as 'bedX' | 'bedY' | 'maxZ' | 'margin' | 'nozzle' | 'lineWidth' | 'layerH' | 'flow'}
+        {#each [['bedX', 'Bed X', 1], ['bedY', 'Bed Y', 1], ['maxZ', 'Max Z', 1], ['margin', 'Margin', 1], ['nozzle', 'Nozzle', 0.1], ['lineWidth', 'Line width', 0.05], ['layerH', 'Layer', 0.05], ['flow', 'Flow mm³/s', 1], ['perimeters', 'Perimeters', 1], ['infillPct', 'Infill %', 5], ['filamentDensity', 'g/cm³', 0.01], ['pricePerKg', 'Price / kg', 1], ['watts', 'Printer W', 10], ['kwhPrice', 'Price / kWh', 0.01]] as [k, lbl, st]}
+          {@const key = k as 'bedX' | 'bedY' | 'maxZ' | 'margin' | 'nozzle' | 'lineWidth' | 'layerH' | 'flow' | 'perimeters' | 'infillPct' | 'filamentDensity' | 'pricePerKg' | 'watts' | 'kwhPrice'}
           <label>{lbl}<input type="number" min="0" max="1000" step={st} bind:value={home.hybrid.printer[key]} /></label>
         {/each}
       </div>
       <div class="stats">
         <div class="stat"><div class="k">Segments</div><div class="v">{plan.segments.length}</div><div class="s">{geo.cores > 1 ? `${geo.cores} cores · ` : ''}{plan.regions.length > 1 ? 'front + back caps' : 'whole profile'}{plan.cutsZ.length ? ` · ${plan.cutsZ.length + 1} layers` : ''}</div></div>
         <div class="stat"><div class="k">Alignment keys</div><div class="v">{plan.keys.length}</div><div class="s">+ dowels between layers</div></div>
-        <div class="stat"><div class="k">Filament / time</div><div class="v">{(plan.totalGrams / 1000).toFixed(1)} kg</div><div class="s">~{plan.hours.toFixed(0)} h at {home.hybrid.printer.flow} mm³/s · {plan.layers} layers per core</div></div>
+        {#if est}
+          <div class="stat" data-testid="print-estimate"><div class="k">Filament</div><div class="v">{(est.grams / 1000).toFixed(2)} kg</div><div class="s">{Math.round(est.metres)} m of 1.75 mm · {est.pieces.length} pieces · {home.hybrid.printer.infillPct}% infill</div></div>
+          <div class="stat"><div class="k">Print time</div><div class="v">{fmtH(est.hours)}</div><div class="s">longest piece {fmtH(est.longest.hours)} ({est.longest.name}) at {home.hybrid.printer.flow} mm³/s</div></div>
+          <div class="stat"><div class="k">Cost</div><div class="v">{(est.filamentCost + est.energyCost).toFixed(2)}</div><div class="s">filament {est.filamentCost.toFixed(2)} + electricity {est.energyCost.toFixed(2)} (per speaker)</div></div>
+        {:else}
+          <div class="stat"><div class="k">Filament / time</div><div class="v">{(plan.totalGrams / 1000).toFixed(1)} kg</div><div class="s">~{plan.hours.toFixed(0)} h at {home.hybrid.printer.flow} mm³/s · {plan.layers} layers per core</div></div>
+        {/if}
         <div class="stat"><div class="k">Largest piece</div><div class="v sm">{Math.round(Math.max(...plan.segments.map((s) => s.bedW)))} × {Math.round(Math.max(...plan.segments.map((s) => s.bedH)))} mm</div><div class="s">fits {plan.usable[0]} × {plan.usable[1]} usable</div></div>
       </div>
+      {#if est}
+        <details class="pieces">
+          <summary>Each piece: filament and time</summary>
+          <table class="ptable">
+            <thead><tr><th>Piece</th><th>Height</th><th>Filament</th><th>Time</th></tr></thead>
+            <tbody>
+              {#each est.pieces as pe}<tr><td>{pe.name}</td><td>{Math.round(pe.heightMm)} mm</td><td>{Math.round(pe.grams)} g</td><td>{fmtH(pe.hours)}</td></tr>{/each}
+            </tbody>
+          </table>
+          <p class="small muted">Estimate: each piece's skin ({home.hybrid.printer.perimeters} perimeters × {home.hybrid.printer.lineWidth} mm, and solid top/bottom) at ~60% of your hot end's flow, the inside at the infill you set, +15% travel, a few seconds a layer and ~6 min to heat up per piece. Speaker walls are best printed solid (100%): mass and stiffness are what keep them quiet. Costs are per speaker, in whatever currency your prices are in.</p>
+        </details>
+      {/if}
         <div class="svg-wrap sect">
         <svg viewBox={`-30 -30 ${geo.W + 60} ${geo.H + 60}`} role="img" aria-label="Print layout">
           <g transform={`translate(0 ${geo.H}) scale(1 -1)`}>
@@ -890,5 +938,22 @@
     width: 20px;
     height: 20px;
     accent-color: var(--accent);
+  }
+  .ptable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin: 6px 0;
+  }
+  .ptable td,
+  .ptable th {
+    text-align: left;
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .pieces summary {
+    cursor: pointer;
+    font-size: 13px;
+    margin: 6px 0;
   }
 </style>

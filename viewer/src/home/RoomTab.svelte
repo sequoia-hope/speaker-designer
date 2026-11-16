@@ -24,7 +24,9 @@
   import { designById, type Role } from './designs';
   import { planFor } from './planning';
   import { cabinetDims } from './hybridModels';
-  import { home, saveHome, ROOM_PRESETS, livingPrinted } from './homeState.svelte';
+  import { home, saveHome, ROOM_PRESETS, livingPrinted, printedParams } from './homeState.svelte';
+  import { HYBRID_PRESETS, PRINTED_DESIGNS, buildGeometry, simulate } from './hybrid';
+  import { findDriver } from './drivers';
   import {
     FT,
     type BoxAlignment,
@@ -113,6 +115,10 @@
       const hd = cabinetDims(livingPrinted());
       out.mains = { w: hd.w, h: hd.h, d: hd.d, tweeterFromTopMm: 90, isTower: hd.h > 700 };
     }
+    if (printedSub) {
+      const hd = cabinetDims(printedSub.p);
+      out.sub = { w: hd.w, h: hd.h, d: hd.d, tweeterFromTopMm: hd.h / 2, isTower: false };
+    }
     return out;
   });
   function pickSpeaker(id: string | null) {
@@ -142,6 +148,41 @@
     if (home.placement.speakerSpacingM > maxSpacing) home.placement.speakerSpacingM = Math.max(0.8, maxSpacing);
     const maxL = home.room.depthM - 0.3;
     if (home.placement.listenerDistM > maxL) home.placement.listenerDistM = maxL;
+  });
+
+  // ---- a printed horn sub as the room's subwoofer --------------------------------
+  /** printed designs that are subwoofers: the folded horn and the tapped horns */
+  const SUB_CHOICES = [
+    { id: 'sub', name: 'Printed folded horn', type: HYBRID_PRESETS.sub.type },
+    ...PRINTED_DESIGNS.filter((x) => x.params.type === 'tapped' || x.params.type === 'folded-horn').map((x) => ({ id: x.id, name: x.name, type: x.params.type })),
+  ];
+  /**
+   * Its simulated free-field response (complex, one cabinet), normalised to its own
+   * 40–80 Hz level so it drops in for the generic sub at the same overall level —
+   * the room model adds the floor and walls itself, so the free-field sim is used.
+   */
+  const printedSub = $derived.by(() => {
+    const id = home.hybrid.roomSubId;
+    if (!id || !SUB_CHOICES.some((x) => x.id === id)) return null;
+    const p = printedParams(id);
+    const d = findDriver(p.driverId);
+    if (!d) return null;
+    const g = buildGeometry(p, d);
+    if (!g.fits) return { p, name: SUB_CHOICES.find((x) => x.id === id)!.name, H: null, sens: 0, f3: 0 };
+    const r = simulate(p, d, g, { coupled: 1, floor: false, f0: 12, f1: 260, n: 140 });
+    const band = r.H.map((h, i) => (r.freqs[i] >= 40 && r.freqs[i] <= 80 ? Math.hypot(h.re, h.im) : NaN)).filter(Number.isFinite);
+    const ref = band.reduce((a, b) => a + b, 0) / Math.max(1, band.length) || 1;
+    const lf = r.freqs.map(Math.log);
+    const H = (f: number): Complex => {
+      const x = Math.log(f);
+      let i = lf.findIndex((v) => v >= x);
+      if (i <= 0) i = i === 0 ? 1 : lf.length - 1;
+      const t = Math.min(Math.max((x - lf[i - 1]) / (lf[i] - lf[i - 1]), 0), 1);
+      const a = r.H[i - 1];
+      const b = r.H[i];
+      return { re: (a.re + (b.re - a.re) * t) / ref, im: (a.im + (b.im - a.im) * t) / ref };
+    };
+    return { p, name: SUB_CHOICES.find((x) => x.id === id)!.name, H, sens: 20 * Math.log10(ref / 2e-5), f3: r.f3 };
   });
 
   // ---- sources -------------------------------------------------------------
@@ -177,7 +218,8 @@
       const g = 2 / subs.length; // same total bass output as the two mains
       subs.forEach((s, i) => {
         const d = dsp(`S${i + 1}`);
-        srcs.push({ pos: s, drive: (f) => d(f, cscale(cmul(boxResponse(subAl, f), lr4(f, fc, 'lp')), g)) });
+        const H = printedSub?.H;
+        srcs.push({ pos: s, drive: (f) => d(f, cscale(cmul(H ? H(f) : boxResponse(subAl, f), lr4(f, fc, 'lp')), g)) });
       });
     }
     return srcs;
@@ -1056,13 +1098,31 @@
         <button class="chip" class:on={sub.layout === id} onclick={() => (home.sub.layout = id as typeof sub.layout)}>{lbl}</button>
       {/each}
     </div>
+    <div class="chips" data-testid="room-sub-kind">
+      <span class="small muted" style="align-self:center">Cabinet:</span>
+      <button class="chip" class:on={!printedSub} onclick={() => (home.hybrid.roomSubId = null)}>Generic sealed</button>
+      {#each SUB_CHOICES as c}
+        <button class="chip" class:on={home.hybrid.roomSubId === c.id} onclick={() => (home.hybrid.roomSubId = c.id)}>{c.name}</button>
+      {/each}
+    </div>
+    {#if printedSub}
+      {#if printedSub.H}
+        <p class="small muted" data-testid="room-sub-note">
+          {printedSub.name}: −3 dB at {printedSub.f3.toFixed(0)} Hz in free space, {printedSub.sens.toFixed(0)} dB at 1 m / 2.83 V over 40–80 Hz.
+          It is level-matched to the mains here (in practice: turn it down in the DSP or the amp), so the curve shows its shape and the room — including its ripple above the horn's passband, which the low-pass hides.
+          Edit it in the Speakers tab; the room uses your current settings.
+        </p>
+      {:else}
+        <p class="small bad">{printedSub.name} can't be built with its current settings — the room uses the generic sealed sub until you fix it in the Speakers tab.</p>
+      {/if}
+    {/if}
     <div class="field">
       <label for="sub-xo">Crossover</label>
       <span class="val">{sub.crossoverHz} Hz</span>
       <input id="sub-xo" type="range" min="50" max="120" step="5" bind:value={home.sub.crossoverHz} />
     </div>
     <p class="small muted">
-      Subs are modelled as generic sealed subwoofers (−3 dB ≈ 25 Hz), with a 4th-order Linkwitz-Riley crossover on
+      Subs are modelled as {printedSub?.H ? `your ${printedSub.name.toLowerCase()} (its simulated response)` : 'generic sealed subwoofers (−3 dB ≈ 25 Hz)'}, with a 4th-order Linkwitz-Riley crossover on
       both subs and mains. Two subs at the middles of opposite walls cancel the odd room modes: that is the trick for an
       even "sweet spot" across a whole sofa instead of a single head position.
       <b>Limitation:</b> each sub's delay and level are not optimised here (in practice you tune them with a measurement

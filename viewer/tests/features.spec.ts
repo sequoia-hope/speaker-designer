@@ -98,3 +98,46 @@ test('app: pin a printed TL, see it in the plywood box modeler; save and load a 
   await expect(page.getByRole('button', { name: 'Sealed', exact: true })).toHaveClass(/on/);
   expect(errors).toEqual([]);
 });
+
+test('app: custom TL cross-section, print estimate, STEP / .waffle downloads, horn sub in the room', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('./');
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  const nav = page.getByRole('navigation', { name: 'Home Hi-Fi sections' });
+  await nav.getByRole('button', { name: /Speaker/ }).click();
+  await page.locator('.gcard', { hasText: 'Printed mini transmission line' }).click();
+  await page.getByTestId('tl-custom').click();
+  await expect(page.getByTestId('tl-profile')).toBeVisible();
+  // a constricted line needs more height than this cabinet: flagged, and "Make it fit" fixes it
+  await page.getByTestId('tl-profile').getByRole('button', { name: 'Constricted end' }).click();
+  await expect(page.getByTestId('tl-profile').getByRole('button', { name: 'Constricted end' })).toHaveClass(/on/);
+  await page.getByRole('button', { name: /Make it fit/ }).first().click();
+  await expect(page.getByText("Can't be built as drawn")).toHaveCount(0, { timeout: 15000 });
+  await page.getByTestId('tl-profile').getByRole('button', { name: 'Tapered 3:1' }).click();
+  // the build view: estimate and CAD files
+  await nav.getByRole('button', { name: /Build/ }).click();
+  await expect(page.getByTestId('print-estimate')).toContainText('kg');
+  const [step] = await Promise.all([page.waitForEvent('download'), page.getByTestId('cad-step').click()]);
+  const stepText = await (await import('node:fs')).promises.readFile((await step.path())!, 'utf8');
+  expect(stepText.startsWith('ISO-10303-21;')).toBe(true);
+  expect(stepText).toContain('MANIFOLD_SOLID_BREP');
+  const [wf] = await Promise.all([page.waitForEvent('download'), page.getByTestId('cad-waffle').click()]);
+  const doc = JSON.parse(await (await import('node:fs')).promises.readFile((await wf.path())!, 'utf8'));
+  expect(doc.format).toBe('waffle-iron');
+  expect(doc.tabs[0].kind.features.features.length).toBeGreaterThan(4);
+  // a plywood design's panels too
+  await nav.getByRole('button', { name: /Speaker/ }).click();
+  await page.locator('.gcard', { hasText: 'Stand-mount monitor' }).first().click();
+  await nav.getByRole('button', { name: /Build/ }).click();
+  const [ply] = await Promise.all([page.waitForEvent('download'), page.getByTestId('ply-step').click()]);
+  expect(ply.suggestedFilename()).toMatch(/\.step$/);
+  // the tapped horn as the room's sub
+  await nav.getByRole('button', { name: /Room/ }).click();
+  const kinds = page.getByTestId('room-sub-kind');
+  if (!(await kinds.isVisible())) await page.getByRole('button', { name: '1 sub', exact: true }).click();
+  await kinds.getByRole('button', { name: 'Printed tapped-horn subwoofer' }).click();
+  await expect(page.getByTestId('room-sub-note')).toContainText('−3 dB at');
+  expect(errors).toEqual([]);
+});

@@ -13,6 +13,9 @@
     tweeterOffsetMm,
     suggestedFc,
     baffleStep = null,
+    tweeterH = null,
+    sources = null,
+    measNotes = [],
   }: {
     woofer: DriverInfo;
     tweeter: DriverInfo;
@@ -24,6 +27,11 @@
     suggestedFc: number;
     /** baffle-step compensation suggestion for this cabinet */
     baffleStep?: { f3Hz: number; gainDb: number; note: string } | null;
+    /** measured tweeter response on freqs (relative), replacing the ideal roll-off */
+    tweeterH?: { re: number; im: number }[] | null;
+    /** where each driver's response comes from (simulated / measured …) */
+    sources?: { woofer: string; tweeter: string } | null;
+    measNotes?: string[];
   } = $props();
 
   let fc = $state<number | null>(null);
@@ -41,6 +49,7 @@
     tweeterOffsetMm,
     invertTweeter: invert ?? type === 'LR2',
     delayTweeterMs: delayMs ?? 0,
+    tweeterH,
   });
   const r = $derived(twoWaySum(freqs, wooferH, woofer, tweeter, opts));
   const lm = $derived(levelMatchDb(woofer, tweeter));
@@ -64,7 +73,11 @@
 
 <section class="card" data-testid="crossover">
   <h2>Crossover (2-way)</h2>
-  <p class="sub">Where the woofer hands over to the {tweeter.model}. The sum below uses this woofer's simulated response in its box and the tweeter's own roll-off; aim for a flat line through the crossover.</p>
+  <p class="sub">Where the woofer hands over to the {tweeter.model}. Aim for a flat line through the crossover.</p>
+  <ul class="callouts" data-testid="xo-sources">
+    <li class={sources?.woofer.startsWith('measured') ? 'good' : ''}><b>Woofer:</b> {sources?.woofer ?? "simulated (this woofer's response in its box)"}</li>
+    <li class={sources?.tweeter.startsWith('measured') ? 'good' : ''}><b>Tweeter:</b> {sources?.tweeter ?? 'ideal roll-off at its Fs'}</li>
+  </ul>
   <div class="field">
     <label for="xo-fc">Crossover frequency</label>
     <span class="val">{fcHz} Hz</span>
@@ -104,6 +117,7 @@
   <ul class="callouts">
     <li class={dev < 1.5 ? 'good' : dev < 3 ? 'warn' : 'bad'}>Within ±1 octave of the crossover the sum strays up to {dev.toFixed(1)} dB.{dev >= 1.5 ? ' Try “Align the tweeter”, the other polarity, or a slightly different frequency.' : ''}</li>
     {#each r.notes as n}<li>{n}</li>{/each}
+    {#each measNotes as n}<li>{n}</li>{/each}
     {#if baffleStep}<li>Baffle step: below ≈ {Math.round(baffleStep.f3Hz)} Hz this cabinet's front stops supporting the woofer and it falls towards −6 dB (left of the graph). Add a {baffleStep.gainDb} dB low shelf at about {Math.round(baffleStep.f3Hz)} Hz on the woofer (DSP), or the equivalent in the passive network. {baffleStep.note}</li>{/if}
   </ul>
   <div class="chips">
