@@ -26,25 +26,70 @@ test('every line shape builds or says why; the legs follow the shape', () => {
       }
       const plan = planPrint(g, DEFAULT_PRINTER);
       expect(buildIssues(p, g, d, plan, DEFAULT_PRINTER, false).filter((i) => i.level === 'bad'), label).toEqual([]);
-      // leg areas (sampled at each leg's middle along the path) keep the drawn ratios — except
-      // leg 1, which never gets narrower than the driver needs
-      const N = p.legs % 2 === 0 ? p.legs : p.legs + 1;
       const L = g.path.s[g.path.s.length - 1];
-      const at = (x: number) => {
-        const s = x * L;
+      const at = (s: number) => {
         const i = Math.max(1, g.path.s.findIndex((v) => v >= s));
         const f = (s - g.path.s[i - 1]) / Math.max(1e-9, g.path.s[i] - g.path.s[i - 1]);
         return g.path.area[i - 1] + (g.path.area[i] - g.path.area[i - 1]) * f;
       };
-      const legMid = Array.from({ length: N }, (_, i) => tlAreaAt(p, (i + 0.5) / N));
-      // the last leg vs the second: the same ratio the shape asks for (±25 %: bends and the path's legs aren't equal length)
-      const want = legMid[N - 1] / legMid[1];
-      const got = at(1 - 0.25 / N) / at(1.5 / N);
-      expect(got / want, label).toBeGreaterThan(0.75);
-      expect(got / want, label).toBeLessThan(1.33);
+      // no staircase: the area never jumps from one path node to the next (past the first
+      // fold — leg 1 is held at the driver's size and blends into the line round that fold)
+      const after1 = g.path.s.findIndex((v, i) => v > g.foldS![0] && !g.path.bend?.[i]);
+      for (let i = after1 + 1; i < g.path.s.length; i++) expect(Math.abs(g.path.area[i] / g.path.area[i - 1] - 1), `${label} node ${i}`).toBeLessThan(0.2);
+      // the area tracks the drawn shape continuously: sampled at many points along every
+      // straight run (bends excluded), area / drawn value is the same scale everywhere —
+      // except the first leg, which never gets narrower than the driver needs
+      if (!odd.includes(prof)) {
+        const straight = (s: number) => {
+          const i = Math.max(1, g.path.s.findIndex((v) => v >= s));
+          return !g.path.bend?.[i] && !g.path.bend?.[i - 1];
+        };
+        const ratios: number[] = [];
+        for (let k = 0; k <= 200; k++) {
+          const s = (k / 200) * L;
+          if (s <= g.foldS![0] || !straight(s)) continue;
+          ratios.push(at(s) / tlAreaAt(p, s / L));
+        }
+        expect(ratios.length, label).toBeGreaterThan(80);
+        const mid = [...ratios].sort((a, b) => a - b)[ratios.length >> 1];
+        for (const r of ratios) {
+          expect(r / mid, label).toBeGreaterThan(0.88);
+          expect(r / mid, label).toBeLessThan(1.13);
+        }
+      }
+      // the walls between legs slope with the shape: in a taper the line's last leg is
+      // narrower at its terminus end than where it starts
+      if (prof === TL_SHAPES.find((sh) => sh.id === 'taper')!.pts) expect(g.path.area[g.path.area.length - 1]).toBeLessThan(at(g.foldS![g.foldS!.length - 1]) * 0.97);
       const r = simulate(p, d, g, { coupled: 1, floor: false, f0: 20, f1: 400, n: 80 });
       expect(r.spl.every(Number.isFinite), label).toBe(true);
     }
+});
+
+test('the simple taper is smooth too: sloped walls, plates and strips to match', () => {
+  for (const base of tls) {
+    const p = { ...base.params, tlProfile: null, taper: 0.35 };
+    const d = findDriver(p.driverId)!;
+    const g = buildGeometry(p, d);
+    expect(g.fits, g.warnings.join('; ')).toBe(true);
+    const L = g.path.s[g.path.s.length - 1];
+    // past the first leg, area / (1 + (taper − 1)·x) is constant (±12 %) along the straight runs
+    const rs = g.path.s
+      .map((s, i) => ({ s, i }))
+      .filter(({ s, i }) => i > 0 && s > g.foldS![0] && !g.path.bend?.[i] && !g.path.bend?.[i - 1])
+      .map(({ s, i }) => g.path.area[i] / tlAreaAt(p, s / L));
+    const mid = [...rs].sort((a, b) => a - b)[rs.length >> 1];
+    for (const r of rs) expect(Math.abs(r / mid - 1)).toBeLessThan(0.12);
+    // printed bends + plywood walls: the fold walls become sloped strips, as long as their slope
+    const q = { ...p, construction: 'bends' as const };
+    const gb = buildGeometry(q, d);
+    if (gb.construction === 'bends') {
+      const folds = gb.strips.filter((st) => /Fold wall/.test(st.name));
+      expect(folds.length).toBeGreaterThan(0);
+      expect(folds.some((st) => st.line)).toBe(true);
+      for (const st of folds)
+        if (st.line) expect(st.lengthMm).toBeCloseTo(Math.hypot(st.line.x1 - st.line.x0, st.line.y1 - st.line.y0), 6);
+    }
+  }
 });
 
 test('the simple taper is the two-point profile', () => {

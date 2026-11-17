@@ -303,6 +303,9 @@ export interface Strip {
   widthMm: number;
   qty: number;
   note?: string;
+  /** a sloped strip (a tapering line's fold wall): its centre line in the profile, end to
+   *  end (rect is then only its bounding box; lengthMm is the length along the slope) */
+  line?: { x0: number; y0: number; x1: number; y1: number };
 }
 
 export function pointInPoly(poly: Pt[], x: number, y: number) {
@@ -465,6 +468,8 @@ export function tlAreaAt(p: Pick<HybridParams, 'taper' | 'tlProfile'>, x: number
 }
 export const TL_PROFILE_MIN = 0.15;
 export const TL_PROFILE_MAX = 3;
+/** a line channel narrower than this can't be printed cleanly or stuffed */
+export const TL_MIN_CHANNEL_MM = 12;
 
 /** named line shapes (6 points, driver end → terminus) */
 export const TL_SHAPES: { id: string; name: string; hint: string; pts: number[] }[] = [
@@ -527,8 +532,20 @@ function roundedRect(x0: number, y0: number, x1: number, y1: number, r: number):
 }
 
 interface Leg {
+  /** top / bottom of the channel at the front inner face (xb) */
   yt: number;
   yb: number;
+  /** …and at the back inner face (xa), when the leg tapers (its walls slope); else level */
+  ytB?: number;
+  ybB?: number;
+}
+
+/** A leg's top and bottom at depth x: straight (sloped) walls between the back face xa and
+ *  the front face xb, level beyond them (through the outer walls). */
+function legAt(lg: Leg, x: number, xa: number, xb: number): { yt: number; yb: number } {
+  if (lg.ytB === undefined || lg.ybB === undefined || xb <= xa) return { yt: lg.yt, yb: lg.yb };
+  const f = Math.max(0, Math.min(1, (x - xa) / (xb - xa)));
+  return { yt: lg.ytB + (lg.yt - lg.ytB) * f, yb: lg.ybB + (lg.yb - lg.ybB) * f };
 }
 
 /**
@@ -547,13 +564,14 @@ function serpentine(legs: Leg[], xa: number, xb: number, W: number, xStart: numb
     const di = i % 2 === 0 ? d0 : (-d0 as 1 | -1);
     const side = di > 0 ? xb : xa;
     const tip = side - di * gaps[i];
+    // (a tapering leg's walls slope: every corner sits on the lines legAt draws)
     const outer: Pt[] = [
-      [side, legs[i].yt],
-      [side, legs[i + 1].yb],
+      [side, legAt(legs[i], side, xa, xb).yt],
+      [side, legAt(legs[i + 1], side, xa, xb).yb],
     ];
     const inner: Pt[] = [
-      [tip, legs[i].yb],
-      [tip, legs[i].yb - t],
+      [tip, legAt(legs[i], tip, xa, xb).yb],
+      [tip, legAt(legs[i + 1], tip, xa, xb).yt],
     ];
     if (aTop) {
       A.push(...outer);
@@ -565,6 +583,11 @@ function serpentine(legs: Leg[], xa: number, xb: number, W: number, xStart: numb
     aTop = !aTop;
   }
   const last = legs[legs.length - 1];
+  // a sloped last leg levels off at the front face, then runs out through the wall
+  if (last.ytB !== undefined) {
+    A.push([xb, aTop ? last.yt : last.yb]);
+    B.push([xb, aTop ? last.yb : last.yt]);
+  }
   A.push([W, aTop ? last.yt : last.yb]);
   B.push([W, aTop ? last.yb : last.yt]);
   return { A, B };
@@ -625,7 +648,8 @@ function designTraps(p: HybridParams, path: { s: number[]; area: number[] }, leg
     // its neck opens into the first leg near the closed end (every odd harmonic's pressure peak)
     const atMm = Math.min(0.04 * L + k * 60, (xb - xa) * 0.8);
     const neckX = p.type === 'tl' || p.type === 'tapped' ? xb - atMm : xa + atMm;
-    const neckY = (legs[0].yt + legs[0].yb) / 2;
+    const l0 = legAt(legs[0], neckX, xa, xb);
+    const neckY = (l0.yt + l0.yb) / 2;
     // the drum sits over the neck, shifted to stay on the plate (the neck can be off-centre)
     const x = Math.max(dia / 2 + 8, Math.min(neckX, W - dia / 2 - 8)) - k * (dia + 10);
     const y = Math.max(dia / 2 + 8, Math.min(neckY, H - dia / 2 - 8));
@@ -886,6 +910,7 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
   let gapsUsed: number[] = [];
   let hornInfo: { xDrv: number; tcFront: number; tcBot: number } | null = null;
   let voidTop = 0;
+  let voidTopB = 0;
   const base = { W, H, E, Etot, cores, coreMm, wallMm: t };
 
   if (p.type === 'waveguide') {
@@ -1271,33 +1296,113 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
     xStart = xb;
     const legLen = xb - xa;
     const S0 = Math.max(sd * 1.1, (dia + 12) * E * 0.6);
-    const hs = Array.from({ length: N }, (_, i) => (S0 * tlAreaAt(p, (i + 0.5) / N)) / E);
-    hs[0] = Math.max(hs[0], dia + 2 * t);
     // an in-wall tweeter gets its own small sealed compartment above the line, so the
     // line's start stays sized for the woofer (1–3× the cone area)
     const twTop = frontTw ? twStack + t : 0;
     const room = H - (N + 1) * t - twTop;
-    const sumH = hs.reduce((a, b) => a + b, 0);
-    // grow the line to use the height, but never wider than ~3× the cone area at the start
-    const grow = Math.max(1, Math.min(room / sumH, (3 * sd) / (hs[0] * E)));
-    for (let i = 0; i < N; i++) hs[i] *= grow;
-    let used = hs.reduce((a, b) => a + b, 0) + (N + 1) * t + twTop;
-    const spare = H - used;
+    // Each leg tapers: its height at the two ends follows the drawn area at those points
+    // along the path, so the walls between legs slope and the area changes continuously
+    // (no staircase). Leg i runs front → back when even (d0 = −1), back → front when odd.
+    const startsFront = (i: number) => i % 2 === 0;
+    // where each leg starts / ends along the path (fraction): first guess ignores the bends,
+    // then refined with the bend lengths the heights give
+    let uS = Array.from({ length: N }, (_, i) => i / N);
+    let uE = Array.from({ length: N }, (_, i) => (i + 1) / N);
+    let hS: number[] = [];
+    let hE: number[] = [];
+    let gaps: number[] = [];
+    let bls: number[] = [];
+    for (let it = 0; it < 4; it++) {
+      hS = uS.map((u) => (S0 * tlAreaAt(p, u)) / E);
+      hE = uE.map((u) => (S0 * tlAreaAt(p, u)) / E);
+      // the first leg never gets narrower than the woofer needs (its whole length: the magnet reaches in)
+      hS[0] = Math.max(hS[0], dia + 2 * t);
+      hE[0] = Math.max(hE[0], dia + 2 * t);
+      // the front and back stacks are independent: each must fit the height
+      const sumF = hS.reduce((a, h, i) => a + (startsFront(i) ? h : hE[i]), 0);
+      const sumB = hS.reduce((a, h, i) => a + (startsFront(i) ? hE[i] : h), 0);
+      // grow the line to use the height, but never wider than ~3× the cone area at the start
+      const grow = Math.max(1, Math.min(room / Math.max(sumF, sumB), (3 * sd) / (hS[0] * E)));
+      hS = hS.map((h) => h * grow);
+      hE = hE.map((h) => h * grow);
+      // a fold opens as wide as the bigger of the two channels meeting there
+      gaps = hE.slice(0, -1).map((h, i) => Math.min(Math.max(h, hS[i + 1]) * 1.05, legLen * 0.5));
+      bls = gaps.map((g, i) => Math.max(t, bendLen(hE[i], hS[i + 1]) - (g + t)));
+      const Ltot = N * legLen + bls.reduce((a, b) => a + b, 0);
+      let acc = 0;
+      const nS: number[] = [];
+      const nE: number[] = [];
+      for (let i = 0; i < N; i++) {
+        nS.push(acc / Ltot);
+        acc += legLen;
+        nE.push(acc / Ltot);
+        if (i < N - 1) acc += bls[i];
+      }
+      uS = nS;
+      uE = nE;
+    }
+    const hF = hS.map((h, i) => (startsFront(i) ? h : hE[i]));
+    const hB = hS.map((h, i) => (startsFront(i) ? hE[i] : h));
+    const usedF = hF.reduce((a, b) => a + b, 0) + (N + 1) * t + twTop;
+    const usedB = hB.reduce((a, b) => a + b, 0) + (N + 1) * t + twTop;
+    let used = Math.max(usedF, usedB);
+    const spareF = H - usedF;
+    const spareB = H - usedB;
+    const spare = Math.min(spareF, spareB);
     if (spare > 40) {
-      // leftover height becomes a sealed void (no filament): fill with sand or shorten the cabinet
-      holes.push(roundedRect(t, t, W - t, t + spare - t, 30 * k));
-      voidTop = t + spare - t;
+      // leftover height becomes a sealed void (no filament): fill with sand or shorten the cabinet;
+      // its top follows the last leg's (sloped) floor
+      holes.push(
+        fillet(
+          [
+            [t, t],
+            [W - t, t],
+            [W - t, spareF],
+            [t, spareB],
+          ],
+          () => 30 * k,
+          () => 30 * k
+        )
+      );
+      voidTop = spareF;
+      voidTopB = spareB;
       labels.push({ x: W / 2, y: t + (spare - t) / 2, text: 'sealed void (sand)' });
       stats.push({ label: 'Spare height', value: `${spare.toFixed(0)} mm at the bottom — a sealed void (fill with sand for stability), or shorten the cabinet by that much` });
       used = H;
     }
-    if ((hs[0] * E) / sd > 3.5)
-      warnings.push(`The line starts at ${((hs[0] * E) / sd).toFixed(1)}× the cone area — wider than the usual 1–3×, which weakens the line's bass. Add legs (a longer, lower-tuned line) or narrow the core.`);
+    if ((hS[0] * E) / sd > 3.5)
+      warnings.push(`The line starts at ${((hS[0] * E) / sd).toFixed(1)}× the cone area — wider than the usual 1–3×, which weakens the line's bass. Add legs (a longer, lower-tuned line) or narrow the core.`);
     if (used > H + 1) {
       fits = false;
       warnings.push(`The line needs ${used.toFixed(0)} mm of height but the cabinet is ${H} mm — taller cabinet, fewer legs, thinner walls or more taper.`);
     }
-    legs = stack(hs, H - t - twTop);
+    // the narrowest point of the line: too thin a slot can't be printed cleanly or stuffed
+    const hMin = Math.min(...hS, ...hE);
+    if (hMin < TL_MIN_CHANNEL_MM) {
+      fits = false;
+      warnings.push(`The line narrows to ${hMin.toFixed(0)} mm at its tightest — under ${TL_MIN_CHANNEL_MM} mm it can't be printed cleanly or stuffed. Less taper there, a narrower core (taller channels) or fewer legs.`);
+    }
+    // each fold: the opening round the wall tip should pass most of the channel area
+    gaps.forEach((g, i) => {
+      const h = Math.max(hE[i], hS[i + 1]);
+      if (g < 0.75 * h)
+        warnings.push(`Fold ${i + 1} opens only ${Math.round(g)} mm round the wall for ${Math.round(h)} mm channels — a constriction. A deeper cabinet, or more legs (shorter channels).`);
+    });
+    // stack top → bottom at the front and at the back; the walls run straight between
+    {
+      let yF = H - t - twTop;
+      let yB = H - t - twTop;
+      legs = [];
+      for (let i = 0; i < N; i++) {
+        legs.push({ yt: yF, yb: yF - hF[i], ytB: yB, ybB: yB - hB[i] });
+        yF -= hF[i] + t;
+        yB -= hB[i] + t;
+      }
+      // the walls are stacked t apart vertically, so a steep one is thinner across its face
+      const steep = Math.max(0, ...legs.slice(0, -1).map((lg) => Math.atan(Math.abs(lg.yb - (lg.ybB ?? lg.yb)) / legLen)));
+      if (Math.cos(steep) < 0.9)
+        warnings.push(`A fold wall slopes ${((steep * 180) / Math.PI).toFixed(0)}° — at that angle it is only ${(t * Math.cos(steep)).toFixed(1)} mm thick across its face. A gentler shape, a deeper cabinet or thicker walls.`);
+    }
     if (frontTw) {
       const yb = H - t - twStack;
       const fr = 3; // front corners: square enough to clear the tweeter
@@ -1317,20 +1422,20 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
       spans.push({ x0: t, x1: W - t, y0: yb, y1: H - t, label: 'tweeter compartment' });
       labels.push({ x: W / 2, y: yb + twStack / 2, text: 'tweeter' });
     }
-    const gaps = gapsFor(hs, legLen);
     gapsUsed = gaps;
     ({ A, B } = serpentine(legs, xa, xb, W, xStart, d0, t, gaps));
     driver = { x: W - t / 2, y: (legs[0].yt + legs[0].yb) / 2, dia, face: 'front' };
     if (frontTw) twY = H - t - twStack / 2;
+    // the path: each leg's area changes linearly end to end (its walls are straight), each
+    // bend blends into the next leg's start
     for (let i = 0; i < N; i++) {
-      seg(s, area, legLen, hs[i] * E, (i < N - 1 ? hs[i + 1] : hs[i]) * E, 6, bendFlags);
+      seg(s, area, legLen, hS[i] * E, hE[i] * E, 12, bendFlags);
       if (i < N - 1) {
-        const bl = bendLen(hs[i], hs[i + 1]) - (gaps[i] + t);
-        foldS.push(s[s.length - 1] + bl / 2);
-        seg(s, area, bl, hs[i + 1] * E, hs[i + 1] * E, 2, bendFlags, true);
+        foldS.push(s[s.length - 1] + bls[i] / 2);
+        seg(s, area, bls[i], hE[i] * E, hS[i + 1] * E, 3, bendFlags, true);
       }
     }
-    area.unshift(area[0]);
+    area.unshift(hS[0] * E);
     bendFlags.unshift(false);
     // offset driver: on the front wall at a front fold (the folds alternate back, front, back…)
     const fold = Math.max(0, Math.round(p.driverFold ?? 0));
@@ -1358,9 +1463,11 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
     stats.push(
       { label: 'Line length (centre line)', value: `${(L / 1000).toFixed(2)} m` },
       { label: 'Quarter-wave tuning', value: `≈ ${(C / (4 * (L / 1000))).toFixed(0)} Hz` },
-      { label: 'Start → end area', value: `${((hs[0] * E) / 100).toFixed(0)} → ${((hs[N - 1] * E) / 100).toFixed(0)} cm² (${((hs[0] * E) / sd).toFixed(1)}× Sd at the start)` }
+      { label: 'Start → end area', value: `${((hS[0] * E) / 100).toFixed(0)} → ${((hE[N - 1] * E) / 100).toFixed(0)} cm² (${((hS[0] * E) / sd).toFixed(1)}× Sd at the start)` }
     );
-    labels.push({ x: W / 2, y: (legs[0].yt + legs[0].yb) / 2, text: 'line start' }, { x: W / 2, y: (legs[N - 1].yt + legs[N - 1].yb) / 2, text: 'terminus' });
+    const mid0 = legAt(legs[0], W / 2, xa, xb);
+    const midN = legAt(legs[N - 1], W / 2, xa, xb);
+    labels.push({ x: W / 2, y: (mid0.yt + mid0.yb) / 2, text: 'line start' }, { x: W / 2, y: (midN.yt + midN.yb) / 2, text: 'terminus' });
   } else {
     // slot-port box / back-loaded horn: leg 0 is the box (behind the driver), then a folded
     // path out to the front — constant for a slot, expanding for a horn
@@ -1455,7 +1562,8 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
       L = Lp;
     }
   }
-  for (const lg of legs) spans.push({ x0: xa, x1: xb, y0: lg.yb, y1: lg.yt });
+  // (a tapering leg: the plate spans its mean height)
+  for (const lg of legs) spans.push({ x0: xa, x1: xb, y0: (lg.yb + (lg.ybB ?? lg.yb)) / 2, y1: (lg.yt + (lg.ytB ?? lg.yt)) / 2 });
   const last = legs[legs.length - 1];
 
   // ---- printed bends + plywood straight walls ------------------------------
@@ -1484,10 +1592,26 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
       const x1 = front.x0 + socket;
       const mid = (name: string, y0: number, y1: number, note?: string) =>
         strips.push({ name, rect: { x0, x1, y0, y1 }, lengthMm: x1 - x0, thickMm: t, widthMm: coreMm, qty: cores, note: note ?? `ends slot ${socket} mm into both printed caps` });
+      // a sloped wall (tapering legs): still a flat rectangular strip, just set at an angle
+      const sloped = (name: string, yTopAt: (x: number) => number) => {
+        const ya = yTopAt(x0) - t / 2;
+        const yb = yTopAt(x1) - t / 2;
+        if (Math.abs(ya - yb) < 0.05) return mid(name, ya - t / 2, ya + t / 2);
+        strips.push({
+          name,
+          rect: { x0, x1, y0: Math.min(ya, yb) - t / 2, y1: Math.max(ya, yb) + t / 2 },
+          line: { x0, y0: ya, x1, y1: yb },
+          lengthMm: Math.hypot(x1 - x0, yb - ya),
+          thickMm: t,
+          widthMm: coreMm,
+          qty: cores,
+          note: `sloped ${((Math.atan2(Math.abs(yb - ya), x1 - x0) * 180) / Math.PI).toFixed(1)}°; ends slot ${socket} mm into both printed caps`,
+        });
+      };
       mid('Top wall', H - t, H);
       mid('Bottom wall', 0, t);
-      for (let i = 0; i < legs.length - 1; i++) mid(`Fold wall ${i + 1}`, legs[i].yb - t, legs[i].yb);
-      if (voidTop > 0) mid('Wall above the sand void', voidTop, voidTop + t);
+      for (let i = 0; i < legs.length - 1; i++) sloped(`Fold wall ${i + 1}`, (x) => legAt(legs[i], x, xa, xb).yb);
+      if (voidTop > 0) sloped('Wall above the sand void', (x) => (voidTopB > 0 ? voidTopB + ((voidTop - voidTopB) * (x - xa)) / (xb - xa) : voidTop) + t);
       if (hornInfo) {
         const { xDrv, tcFront, tcBot } = hornInfo;
         const box = (name: string, r: Rect, len: number, note?: string) => strips.push({ name, rect: r, lengthMm: len, thickMm: t, widthMm: coreMm, qty: cores, note });

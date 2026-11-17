@@ -7,7 +7,8 @@
   import Speaker3D from './Speaker3D.svelte';
   import PanelDrawing from './PanelDrawing.svelte';
   import HybridTab from './HybridTab.svelte';
-  import { cadStep, cadWaffle, plywoodCadParts, plywoodDxf } from './printExport';
+  import { CAD_ARRANGEMENTS, cadStep, cadWaffle, plywoodCadParts, plywoodDxf, plywoodNestParts, type CadArrangement } from './printExport';
+  import SheetLayoutCard from './SheetLayoutCard.svelte';
   import { downloadBlob } from './exporters';
   import { PRINTED_DESIGNS } from './hybrid';
 
@@ -26,6 +27,9 @@
   const cur = $derived(home.designs[home.activeDesign]);
   const box = $derived(plan.box);
   let withStand = $state(false);
+  /** CAD panels laid out flat (a cut sheet), as assembled, or exploded */
+  let cadHow = $state<CadArrangement>('flat');
+  const cadBase = (base: string) => (cadHow === 'flat' ? base : `${base}-${cadHow}`);
   const allPanels = $derived([...plan.panels, ...(plan.stand?.panels ?? [])]);
   const ext = $derived(box.externalMm);
   const t = $derived(plan.material.thicknessMm);
@@ -46,6 +50,7 @@
 
   // drawing scale: 1 svg unit = 1 mm
   const M = 70; // margin for dimension lines
+  const nestParts = $derived(plywoodNestParts(plan, cur.quantity));
   const plyBase = $derived((DESIGNS.find((x) => x.id === home.activeDesign)?.name ?? 'speaker').replace(/[^A-Za-z0-9]+/g, '-').toLowerCase());
 </script>
 {#snippet picker()}
@@ -92,8 +97,13 @@
   <h2>Woodworking plan</h2>
   <div class="chips" style="margin:0 0 8px">
     <button class="chip" onclick={() => downloadBlob(`${plyBase}-panels.dxf`, plywoodDxf(plan), 'application/dxf')}>⬇ Cut sheet (DXF) — every panel with its holes, for a CNC or laser</button>
-    <button class="chip" data-testid="ply-step" onclick={() => downloadBlob(`${plyBase}.step`, cadStep(plywoodCadParts(plan), plyBase), 'model/step')}>⬇ Panels (STEP)</button>
-    <button class="chip" data-testid="ply-waffle" onclick={() => downloadBlob(`${plyBase}.waffle`, cadWaffle(plywoodCadParts(plan), DESIGNS.find((x) => x.id === home.activeDesign)?.name ?? 'Speaker'), 'application/json')}>⬇ Waffle Iron (.waffle)</button>
+    <button class="chip" data-testid="ply-step" onclick={() => downloadBlob(`${cadBase(plyBase)}.step`, cadStep(plywoodCadParts(plan, cadHow), cadBase(plyBase)), 'model/step')}>⬇ Panels (STEP)</button>
+    <button class="chip" data-testid="ply-waffle" onclick={() => downloadBlob(`${cadBase(plyBase)}.waffle`, cadWaffle(plywoodCadParts(plan, cadHow), DESIGNS.find((x) => x.id === home.activeDesign)?.name ?? 'Speaker'), 'application/json')}>⬇ Waffle Iron (.waffle)</button>
+  </div>
+  <div class="seg" style="margin:0 0 8px" role="radiogroup" aria-label="CAD layout" data-testid="ply-cad-how" title="STEP / .waffle: panels side by side, where each sits in the box, or pulled apart">
+    {#each CAD_ARRANGEMENTS as a (a.id)}
+      <button role="radio" aria-checked={cadHow === a.id} class:on={cadHow === a.id} onclick={() => (cadHow = a.id)}>{a.label}</button>
+    {/each}
   </div>
   <p class="sub">
     {cur.quantity} × {box.alignment.kind} box for the {woofer.brand} {woofer.model}{tweeter ? ` + ${tweeter.model}` : ''},
@@ -235,22 +245,17 @@
     </tbody>
   </table>
   <label class="toggle"><input type="checkbox" bind:checked={cur.stands} /> Include matching stands (tweeter at your ear height from the Room tab)</label>
-  <h3>Sheet layout</h3>
-  {#each plan.sheets as s, si}
-    <div class="cap">Sheet {si + 1} of {plan.sheets.length} · {Math.round(s.sheetMm[0] / 304.8)}′ × {Math.round(s.sheetMm[1] / 304.8)}′ · {(s.usedFraction * 100).toFixed(0)} % used</div>
-    <div class="svg-wrap">
-      <svg viewBox={`-10 -10 ${s.sheetMm[0] + 20} ${s.sheetMm[1] + 20}`} role="img" aria-label="Sheet layout">
-        <rect x="0" y="0" width={s.sheetMm[0]} height={s.sheetMm[1]} class="sheet" />
-        {#each s.parts as p}
-          <rect x={p.x} y={p.y} width={p.w} height={p.h} class="part" />
-          <text x={p.x + p.w / 2} y={p.y + p.h / 2} text-anchor="middle" class="ptxt">{p.label}</text>
-          <text x={p.x + p.w / 2} y={p.y + p.h / 2 + 34} text-anchor="middle" class="ptxt mm">{inch(p.w)} × {inch(p.h)}</text>
-        {/each}
-      </svg>
-    </div>
-  {/each}
-  <p class="small muted">Long edge of each part runs along the sheet. 3.5 mm saw kerf and 10 mm trimmed off dinged factory edges are allowed for. Many lumber yards will rip sheets for you if you bring this layout.</p>
 </section>
+
+{#key `${home.activeDesign}|${plan.material.id}`}
+  <SheetLayoutCard
+    parts={nestParts}
+    fileBase={plyBase}
+    defaultSheetMm={plan.material.sheetMm}
+    defaultPrice={plan.material.approxSheetUsd}
+    note="Many lumber yards will rip sheets for you if you bring this layout."
+  />
+{/key}
 
 <section class="card">
   <h2>Panel by panel</h2>

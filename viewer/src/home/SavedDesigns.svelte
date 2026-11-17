@@ -1,7 +1,7 @@
 <script lang="ts">
   // Named saves of whatever design is on screen (plywood settings or printed params),
   // with load / delete and a JSON file to back up or share them.
-  import { home, saveHome, type SavedDesign } from './homeState.svelte';
+  import { home, saveHome, withModeler, type SavedDesign } from './homeState.svelte';
   import { designById } from './designs';
   import { printedDesignById } from './hybrid';
   import { downloadBlob } from './exporters';
@@ -30,7 +30,8 @@
       else home.hybrid.designs[s.baseId] = $state.snapshot(s.params);
       home.activePrint = s.baseId;
     } else if (s.settings) {
-      home.designs[s.baseId] = $state.snapshot(s.settings);
+      // settings carry the box modeler's PR / bandpass choices too (older saves: none)
+      home.designs[s.baseId] = withModeler({ [s.baseId]: $state.snapshot(s.settings) })[s.baseId];
       home.activeDesign = s.baseId;
       home.activePrint = null;
     }

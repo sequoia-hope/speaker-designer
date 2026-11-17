@@ -227,6 +227,61 @@ export function panelsToDxf(panels: DxfPanel[], opts: { gapMm?: number; columns?
   return out.join('\n') + '\n';
 }
 
+/** A free-placed DXF entity (mm), for writers that do their own layout. */
+export type DxfEntity =
+  | { kind: 'poly'; layer: string; pts: [number, number][]; closed?: boolean }
+  | { kind: 'circle'; layer: string; x: number; y: number; r: number }
+  | { kind: 'text'; layer: string; x: number; y: number; h: number; s: string };
+
+/** ASCII DXF R12 (AC1009, mm) of already-placed entities on named layers. */
+export function entitiesToDxf(layers: { name: string; color: number }[], ents: DxfEntity[]): string {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const add = (x: number, y: number) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
+  for (const e of ents) {
+    if (e.kind === 'poly') for (const [x, y] of e.pts) add(x, y);
+    else if (e.kind === 'circle') { add(e.x - e.r, e.y - e.r); add(e.x + e.r, e.y + e.r); }
+    else add(e.x, e.y);
+  }
+  if (!isFinite(minX)) { minX = minY = maxX = maxY = 0; }
+  const out: string[] = [];
+  const g = (code: number, value: string | number) => { out.push(String(code), typeof value === 'number' ? num(value) : value); };
+  g(0, 'SECTION'); g(2, 'HEADER');
+  g(9, '$ACADVER'); g(1, 'AC1009');
+  g(9, '$INSUNITS'); g(70, '4');
+  g(9, '$MEASUREMENT'); g(70, '1');
+  g(9, '$EXTMIN'); g(10, minX); g(20, minY); g(30, 0);
+  g(9, '$EXTMAX'); g(10, maxX); g(20, maxY); g(30, 0);
+  g(0, 'ENDSEC');
+  const all = [{ name: '0', color: 7 }, ...layers.filter((l) => l.name !== '0')];
+  g(0, 'SECTION'); g(2, 'TABLES');
+  g(0, 'TABLE'); g(2, 'LTYPE'); g(70, '1');
+  g(0, 'LTYPE'); g(2, 'CONTINUOUS'); g(70, '0'); g(3, 'Solid line'); g(72, '65'); g(73, '0'); g(40, 0);
+  g(0, 'ENDTAB');
+  g(0, 'TABLE'); g(2, 'LAYER'); g(70, String(all.length));
+  for (const l of all) { g(0, 'LAYER'); g(2, dxfLayerName(l.name)); g(70, '0'); g(62, String(l.color)); g(6, 'CONTINUOUS'); }
+  g(0, 'ENDTAB');
+  g(0, 'ENDSEC');
+  g(0, 'SECTION'); g(2, 'ENTITIES');
+  for (const e of ents) {
+    const layer = dxfLayerName(e.layer);
+    if (e.kind === 'poly') {
+      if (e.pts.length < 2) continue;
+      const pts = e.pts;
+      const n = pts.length > 2 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1] ? pts.length - 1 : pts.length;
+      g(0, 'POLYLINE'); g(8, layer); g(66, '1'); g(10, 0); g(20, 0); g(30, 0); g(70, e.closed === false ? '0' : '1');
+      for (let i = 0; i < n; i++) { g(0, 'VERTEX'); g(8, layer); g(10, pts[i][0]); g(20, pts[i][1]); g(30, 0); }
+      g(0, 'SEQEND'); g(8, layer);
+    } else if (e.kind === 'circle') {
+      g(0, 'CIRCLE'); g(8, layer); g(10, e.x); g(20, e.y); g(30, 0); g(40, e.r);
+    } else {
+      g(0, 'TEXT'); g(8, layer); g(10, e.x); g(20, e.y); g(30, 0); g(40, e.h); g(1, dxfText(e.s));
+    }
+  }
+  g(0, 'ENDSEC');
+  g(0, 'EOF');
+  return out.join('\n') + '\n';
+}
+
 // ---------------------------------------------------------------- download
 
 /** Trigger a browser download. No-op outside a browser (e.g. Node tests). */

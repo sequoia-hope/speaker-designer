@@ -7,8 +7,9 @@ import { LIVING_ROOM, toAppFrame } from './roomShape';
 import { DEFAULT_OUTDOOR, type OutdoorConfig } from './outdoor';
 import { DEFAULT_PRINTER, HYBRID_PRESETS, PRINTED_DESIGNS, type HybridParams, type Printer } from './hybrid';
 import { setCustomDriverSource, type DriverInfo } from './drivers';
-import type { ModelPin } from './boxModel';
+import { sanitizeModelerAlt, type ModelPin } from './boxModel';
 import type { Measurement } from './measurements';
+import type { OverlaySel } from './measOverlay';
 
 export interface HomeState {
   room: RoomConfig;
@@ -65,6 +66,23 @@ export interface HomeState {
   savedDesigns: SavedDesign[];
   /** imported frequency-response / impedance measurements (REW, .frd, .zma) */
   measurements: Measurement[];
+  /** imported measurement overlaid on each predicted-response chart (default off), and the room-EQ toggle */
+  measOverlay: MeasOverlayState;
+}
+
+export interface MeasOverlayState {
+  box: OverlaySel;
+  boxZ: OverlaySel;
+  printed: OverlaySel;
+  printedZ: OverlaySel;
+  room: OverlaySel;
+  /** show the suggested room-mode EQ on the seat chart */
+  roomEq: boolean;
+}
+
+export function freshOverlays(): MeasOverlayState {
+  const off = () => ({ on: false, id: null });
+  return { box: off(), boxZ: off(), printed: off(), printedZ: off(), room: off(), roomEq: false };
 }
 
 export interface SavedDesign {
@@ -157,7 +175,19 @@ export function defaultState(): HomeState {
     modelerPins: [],
     savedDesigns: [],
     measurements: [],
+    measOverlay: freshOverlays(),
   };
+}
+
+/** Keep each design's stored box-modeler (PR / bandpass) choices only if they're well-formed. */
+export function withModeler(designs: Record<string, DesignSettings>): Record<string, DesignSettings> {
+  for (const [id, ds] of Object.entries(designs)) {
+    if (!ds || typeof ds !== 'object' || !('modeler' in ds)) continue;
+    const m = sanitizeModelerAlt(ds.modeler);
+    const { modeler: _drop, ...rest } = ds;
+    designs[id] = m ? { ...rest, modeler: m } : rest;
+  }
+  return designs;
 }
 
 function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
@@ -180,7 +210,7 @@ function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
       room: { ...d.room, ...s.room },
       placement: { ...d.placement, ...s.placement },
       sub: { ...d.sub, ...s.sub },
-      designs: { ...d.designs, ...(s.designs ?? {}) },
+      designs: withModeler({ ...d.designs, ...(s.designs ?? {}) }),
       system: { ...d.system, ...(s.system ?? {}), roles: { ...d.system.roles, ...(s.system?.roles ?? {}) }, dsp: { ...(s.system?.dsp ?? {}) } },
       furniture: { ...d.furniture, ...(s.furniture ?? {}) },
       hybrid: {
@@ -205,10 +235,22 @@ function load(raw: string | null = localStorage.getItem(KEY)): HomeState {
       modelerPins: Array.isArray(s.modelerPins) ? s.modelerPins : [],
       savedDesigns: Array.isArray(s.savedDesigns) ? s.savedDesigns : [],
       measurements: Array.isArray(s.measurements) ? s.measurements.filter((m: Measurement) => m && Array.isArray(m.points)) : [],
+      measOverlay: loadOverlays(s.measOverlay),
     };
   } catch {
     return d;
   }
+}
+
+function loadOverlays(raw: unknown): MeasOverlayState {
+  const d = freshOverlays();
+  if (!raw || typeof raw !== 'object') return d;
+  const r = raw as Record<string, unknown>;
+  const sel = (v: unknown): OverlaySel => {
+    const o = (v ?? {}) as Record<string, unknown>;
+    return { on: o.on === true, id: typeof o.id === 'string' ? o.id : null };
+  };
+  return { box: sel(r.box), boxZ: sel(r.boxZ), printed: sel(r.printed), printedZ: sel(r.printedZ), room: sel(r.room), roomEq: r.roomEq === true };
 }
 
 export const home = $state<HomeState>(load());

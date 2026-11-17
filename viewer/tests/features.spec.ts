@@ -141,3 +141,55 @@ test('app: custom TL cross-section, print estimate, STEP / .waffle downloads, ho
   await expect(page.getByTestId('room-sub-note')).toContainText('−3 dB at');
   expect(errors).toEqual([]);
 });
+
+test('app: PR setting survives a reload, sheet layout + nested DXF, assembled STEP, dispersion, room EQ export', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  const fs = await import('node:fs');
+  await page.goto('./');
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  const nav = page.getByRole('navigation', { name: 'Home Hi-Fi sections' });
+  // a passive-radiator box in the modeler is remembered
+  await nav.getByRole('button', { name: /Speaker/ }).click();
+  await page.locator('.gcard', { hasText: 'Stand-mount monitor' }).first().click();
+  const modeler = page.getByTestId('box-modeler');
+  await modeler.getByRole('button', { name: 'Passive radiator', exact: true }).click();
+  await expect(page.getByTestId('pr-controls')).toBeVisible();
+  await page.waitForTimeout(600);
+  await page.reload();
+  await nav.getByRole('button', { name: /Speaker/ }).click();
+  await expect(page.getByTestId('pr-controls')).toBeVisible();
+  // the plywood build: sheets, cut list, nested DXF, assembled STEP
+  await nav.getByRole('button', { name: /Build/ }).click();
+  await expect(page.getByTestId('sheet-layout')).toBeVisible();
+  const [dxf] = await Promise.all([page.waitForEvent('download'), page.getByTestId('nest-dxf').click()]);
+  const dxfText = await fs.promises.readFile((await dxf.path())!, 'utf8');
+  for (const layer of ['SHEET', 'CUT_OUTSIDE', 'CUT_INSIDE']) expect(dxfText).toContain(layer);
+  const [csv] = await Promise.all([page.waitForEvent('download'), page.getByTestId('nest-csv').click()]);
+  expect(csv.suggestedFilename()).toMatch(/\.csv$/);
+  await page.getByTestId('ply-cad-how').getByRole('radio', { name: 'Assembled' }).click();
+  const [ply] = await Promise.all([page.waitForEvent('download'), page.getByTestId('ply-step').click()]);
+  expect(await fs.promises.readFile((await ply.path())!, 'utf8')).toContain('MANIFOLD_SOLID_BREP');
+  // a printed design with a tweeter: dispersion card, exploded .waffle
+  await nav.getByRole('button', { name: /Speaker/ }).click();
+  await page.locator('.gcard', { hasText: 'Printed mini transmission line' }).click();
+  const di = page.getByTestId('di-verdict');
+  await expect(di).toContainText(/kHz/);
+  // following its suggestion (only coverages that fit the cabinet are offered) keeps the design buildable
+  const use = di.getByRole('button', { name: /^Use \d+°/ });
+  if (await use.count()) await use.click();
+  await expect(page.getByText("Can't be built as drawn")).toHaveCount(0);
+  await nav.getByRole('button', { name: /Build/ }).click();
+  await page.getByTestId('cad-how').getByRole('radio', { name: 'Exploded' }).click();
+  const [wf] = await Promise.all([page.waitForEvent('download'), page.getByTestId('cad-waffle').click()]);
+  expect(JSON.parse(await fs.promises.readFile((await wf.path())!, 'utf8')).format).toBe('waffle-iron');
+  // room-mode EQ: cuts only, exported as Equalizer APO text
+  await nav.getByRole('button', { name: /Room/ }).click();
+  const eq = page.getByTestId('room-eq');
+  await eq.getByText('Suggest room-mode EQ').click();
+  const [apo] = await Promise.all([page.waitForEvent('download'), page.getByTestId('room-eq-export').click()]);
+  const apoText = await fs.promises.readFile((await apo.path())!, 'utf8');
+  expect(apoText).toMatch(/Filter 1: ON PK Fc [\d.]+ Hz Gain -[\d.]+ dB Q [\d.]+/);
+  expect(errors).toEqual([]);
+});

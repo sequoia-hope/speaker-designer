@@ -1,6 +1,21 @@
 <script lang="ts">
   import type { DriverInfo } from './drivers';
   import { sensitivityFromTS } from './boxModel';
+  import { home, saveHome } from './homeState.svelte';
+  import { newMeasurement, type MeasPoint, type Measurement } from './measurements';
+  import {
+    TS_LABEL,
+    TS_UNIT,
+    fitImpedance,
+    parseFrd,
+    parseTsText,
+    parseZma,
+    vasFromAddedMass,
+    vasFromBox,
+    type ImpedanceFit,
+    type TsKey,
+    type TsParseResult,
+  } from './driverImport';
 
   let {
     initial = null,
@@ -177,8 +192,124 @@
     { k: 'priceUsd', label: 'Price', unit: '$' },
   ];
 
+  // ---- import: datasheet paste, impedance sweep (.zma), on-axis response (.frd) ----
+  let importOpen = $state(false);
+  let paste = $state('');
+  let pasteRes = $state<TsParseResult | null>(null);
+  /** form fields last filled by an import (highlighted until edited) */
+  let filled = $state<Partial<Record<Key, boolean>>>({});
+  let zFit = $state<ImpedanceFit | null>(null);
+  let zErr = $state<string | null>(null);
+  let zNotes = $state<string[]>([]);
+  let reDc = $state('');
+  let vasMode = $state<'mass' | 'box'>('mass');
+  let vasAmount = $state('');
+  let z2Fit = $state<ImpedanceFit | null>(null);
+  let z2Points = $state<MeasPoint[] | null>(null);
+  let z2Name = $state('');
+  /** measurements attached to the driver when it is saved */
+  let attach = $state<{ frd: Measurement | null; zma: Measurement | null }>({ frd: null, zma: null });
+  let frdErr = $state<string | null>(null);
+
+  const FORM_KEYS: Partial<Record<TsKey, Key>> = {
+    fsHz: 'fsHz',
+    qts: 'qts',
+    qes: 'qes',
+    qms: 'qms',
+    vasL: 'vasL',
+    sdCm2: 'sdCm2',
+    xmaxMm: 'xmaxMm',
+    reOhm: 'reOhm',
+    nominalOhm: 'nominalOhm',
+    leMh: 'leMh',
+    sensDb: 'sensDb',
+    powerW: 'powerW',
+  };
+  const fmt = (k: TsKey, x: number) => (k === 'qts' || k === 'qes' || k === 'qms' ? x.toFixed(3) : String(Number(x.toPrecision(4))));
+  function fill(vals: Partial<Record<TsKey, number | undefined>>) {
+    const next = { ...filled };
+    for (const [k, x] of Object.entries(vals) as [TsKey, number | undefined][]) {
+      const fk = FORM_KEYS[k];
+      if (!fk || x === undefined || !Number.isFinite(x)) continue;
+      (f as Record<Key, string>)[fk] = fmt(k, x);
+      next[fk] = true;
+    }
+    filled = next;
+  }
+  function readPaste() {
+    pasteRes = parseTsText(paste);
+    fill(pasteRes.values);
+  }
+  async function fileText(e: Event): Promise<{ name: string; text: string } | null> {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    return file ? { name: file.name, text: await file.text() } : null;
+  }
+  const reEntered = $derived(num(reDc));
+  async function loadZma(e: Event) {
+    const file = await fileText(e);
+    if (!file) return;
+    zErr = null;
+    try {
+      const { parsed, fit } = parseZma(file.text, file.name, reEntered && reEntered > 0 ? reEntered : undefined);
+      zNotes = parsed.warnings;
+      if (!fit) throw new Error('no clear impedance peak — is it a free-air sweep of a single driver?');
+      zFit = fit;
+      z2Fit = z2Points ? fitImpedance(z2Points, fit.reOhm) : null;
+      fill({ reOhm: fit.reOhm, fsHz: fit.fsHz, qms: fit.qms, qes: fit.qes, qts: fit.qts, leMh: fit.leMh });
+      attach.zma = { ...newMeasurement(file.name, parsed), role: 'woofer', reOhm: reEntered && reEntered > 0 ? reEntered : undefined };
+    } catch (err) {
+      zErr = (err as Error).message;
+    }
+  }
+  async function loadZma2(e: Event) {
+    const file = await fileText(e);
+    if (!file) return;
+    zErr = null;
+    try {
+      z2Points = parseZma(file.text, file.name).parsed.points;
+      z2Name = file.name;
+      z2Fit = zFit ? fitImpedance(z2Points, zFit.reOhm) : null;
+      if (zFit && !z2Fit) throw new Error('no clear impedance peak in the second sweep');
+    } catch (err) {
+      zErr = (err as Error).message;
+    }
+  }
+  const vasCalc = $derived.by((): { vasL: number; how: string } | { err: string } | null => {
+    if (!zFit || !z2Fit) return null;
+    const amt = num(vasAmount);
+    if (!amt || !(amt > 0)) return { err: vasMode === 'mass' ? 'Enter the added mass.' : 'Enter the box’s net volume.' };
+    if (vasMode === 'mass') {
+      const sd = num(f.sdCm2);
+      if (!sd || !(sd > 0)) return { err: 'Enter Sd first: the added-mass method needs the cone area.' };
+      const r = vasFromAddedMass(zFit.fsHz, z2Fit.fsHz, amt, sd);
+      return r ? { vasL: r.vasL, how: `Mms ${r.mmsG.toFixed(1)} g, Cms ${r.cmsMmPerN.toFixed(3)} mm/N` } : { err: 'The second sweep’s Fs should be lower than the free-air Fs.' };
+    }
+    const v = vasFromBox(zFit.fsHz, zFit.qes, z2Fit.fsHz, z2Fit.qes, amt);
+    return v ? { vasL: v, how: `Fc ${z2Fit.fsHz.toFixed(1)} Hz, Qec ${z2Fit.qes.toFixed(2)}` } : { err: 'The boxed sweep’s Fc should be higher than the free-air Fs.' };
+  });
+  async function loadFrd(e: Event) {
+    const file = await fileText(e);
+    if (!file) return;
+    frdErr = null;
+    try {
+      attach.frd = { ...newMeasurement(file.name, parseFrd(file.text, file.name)), role: 'woofer' };
+    } catch (err) {
+      frdErr = (err as Error).message;
+    }
+  }
+
   function save() {
-    if (draft) onSave(draft);
+    if (!draft) return;
+    const d = draft;
+    onSave(d);
+    // imported sweeps go to the measurements, tied to this driver (the crossover / impedance views pick them up)
+    const add = [attach.frd, attach.zma].filter((m): m is Measurement => !!m).map((m) => ({ ...m, driverId: d.id }));
+    if (add.length) {
+      home.measurements = [...home.measurements, ...add];
+      saveHome();
+    }
   }
 </script>
 
@@ -192,13 +323,86 @@
     <button type="button" class="chip" class:on={f.role === 'sub'} onclick={() => (f.role = 'sub')}>Subwoofer</button>
   </div>
 
+  <details class="imp" bind:open={importOpen} data-testid="driver-import">
+    <summary>Import from a datasheet or a measurement</summary>
+    <p class="small muted">Paste the T/S table from the maker's datasheet, and/or load your own impedance sweep (.zma) or on-axis response (.frd). The form below is filled in for you to check before saving.</p>
+
+    <label class="fld">
+      <span>Datasheet text</span>
+      <textarea rows="5" bind:value={paste} placeholder={'Fs 28.5 Hz\nQts 0.38\nVas 42 L\nSd 220 cm²\nXmax 6 mm\nRe 3.2 Ω …'} aria-label="Datasheet text"></textarea>
+    </label>
+    <div class="chips">
+      <button type="button" class="chip" onclick={readPaste} disabled={!paste.trim()} data-testid="read-paste">Read parameters</button>
+    </div>
+    {#if pasteRes}
+      <div class="parsed small" data-testid="paste-result">
+        {#if pasteRes.found.length}
+          <p><b>Found:</b> {#each pasteRes.found as it, i}{i ? ' · ' : ''}{TS_LABEL[it.key]} {fmt(it.key, it.value)}{TS_UNIT[it.key] ? ` ${TS_UNIT[it.key]}` : ''}{/each}</p>
+        {:else}
+          <p class="errtxt">No T/S parameters recognised in that text.</p>
+        {/if}
+        {#if pasteRes.derived.length}
+          <p><b>Worked out:</b> {#each pasteRes.derived as it, i}{i ? ' · ' : ''}<span title={it.how}>{TS_LABEL[it.key]} {fmt(it.key, it.value)}{TS_UNIT[it.key] ? ` ${TS_UNIT[it.key]}` : ''} <i class="muted">({it.how})</i></span>{/each}</p>
+        {/if}
+        {#if pasteRes.missing.length}<p class="errtxt"><b>Still missing:</b> {pasteRes.missing.map((k) => TS_LABEL[k]).join(', ')}</p>{/if}
+        {#each pasteRes.warnings as w}<p class="warntxt">{w}</p>{/each}
+      </div>
+    {/if}
+
+    <h4>Impedance sweep (.zma)</h4>
+    <div class="chips">
+      <label class="fld re"><span>Re from an ohmmeter<i>Ω</i></span><input inputmode="decimal" bind:value={reDc} placeholder="optional" aria-label="Measured DC resistance" /></label>
+      <label class="chip file">⬆ Free-air sweep<input type="file" accept=".zma,.txt,.csv,text/plain" onchange={loadZma} hidden data-testid="zma-file" /></label>
+    </div>
+    {#if zErr}<p class="small errtxt">Couldn't use that file: {zErr}</p>{/if}
+    {#if zFit}
+      <div class="parsed small" data-testid="zma-result">
+        <p>
+          <b>Fitted:</b> Re {zFit.reOhm.toFixed(2)} Ω <i class="muted">({zFit.reSource})</i> · Fs {zFit.fsHz.toFixed(1)} Hz · Qms {zFit.qms.toFixed(2)} · Qes {zFit.qes.toFixed(3)} · Qts {zFit.qts.toFixed(3)}{zFit.leMh != null ? ` · Le ${zFit.leMh.toFixed(2)} mH` : ''}
+          <span class="muted">(peak {zFit.zMaxOhm.toFixed(1)} Ω, f1/f2 {zFit.f1Hz.toFixed(1)}/{zFit.f2Hz.toFixed(1)} Hz)</span>
+        </p>
+        {#each [...zNotes, ...zFit.notes] as n}<p class="warntxt">{n}</p>{/each}
+        <p class="muted">A single sweep can't give Vas: enter Vas and Sd from the datasheet, or add a second sweep —</p>
+        <div class="chips">
+          <button type="button" class="chip" class:on={vasMode === 'mass'} onclick={() => (vasMode = 'mass')}>with added mass</button>
+          <button type="button" class="chip" class:on={vasMode === 'box'} onclick={() => (vasMode = 'box')}>in a sealed box</button>
+          <label class="fld re"><span>{vasMode === 'mass' ? 'Added mass' : 'Box net volume'}<i>{vasMode === 'mass' ? 'g' : 'L'}</i></span><input inputmode="decimal" bind:value={vasAmount} aria-label={vasMode === 'mass' ? 'Added mass' : 'Box net volume'} /></label>
+          <label class="chip file">⬆ Second sweep{z2Name ? ` (${z2Name})` : ''}<input type="file" accept=".zma,.txt,.csv,text/plain" onchange={loadZma2} hidden /></label>
+        </div>
+        {#if vasCalc}
+          {#if 'err' in vasCalc}<p class="errtxt">{vasCalc.err}</p>
+          {:else}
+            <p>Vas <b>{vasCalc.vasL.toFixed(1)} L</b> <span class="muted">({vasCalc.how})</span> <button type="button" class="chip" onclick={() => vasCalc && 'vasL' in vasCalc && fill({ vasL: vasCalc.vasL })}>Use it</button></p>
+          {/if}
+        {/if}
+      </div>
+    {/if}
+
+    <h4>On-axis response (.frd)</h4>
+    <div class="chips">
+      <label class="chip file">⬆ Response file<input type="file" accept=".frd,.txt,.csv,text/plain" onchange={loadFrd} hidden data-testid="frd-file" /></label>
+    </div>
+    {#if frdErr}<p class="small errtxt">Couldn't use that file: {frdErr}</p>{/if}
+    {#if attach.frd || attach.zma}
+      <p class="small muted" data-testid="attach-list">
+        Saved with the driver, as its measurements:
+        {#each [attach.frd, attach.zma] as m, i}
+          {#if m}
+            <span class="att">{m.fileName} ({m.kind === 'spl' ? 'response' : 'impedance'}, {m.points.length} points)
+              <button type="button" class="x" aria-label={`Don't attach ${m.fileName}`} onclick={() => (i === 0 ? (attach.frd = null) : (attach.zma = null))}>✕</button></span>
+          {/if}
+        {/each}
+      </p>
+    {/if}
+  </details>
+
   <h3>Thiele/Small parameters</h3>
   <p class="small muted">From the datasheet. Any two of Qts / Qes / Qms will do.</p>
   <div class="grid">
     {#each CORE as fl}
-      <label class="fld" class:err={check.errors[fl.k] || ((fl.k === 'qts' || fl.k === 'qes') && check.errors.q && !f[fl.k])}>
+      <label class="fld" class:err={check.errors[fl.k] || ((fl.k === 'qts' || fl.k === 'qes') && check.errors.q && !f[fl.k])} class:filled={filled[fl.k]}>
         <span>{fl.label}{#if fl.unit}<i>{fl.unit}</i>{/if}</span>
-        <input inputmode="decimal" autocomplete="off" bind:value={f[fl.k]} aria-label={fl.label} />
+        <input inputmode="decimal" autocomplete="off" bind:value={f[fl.k]} aria-label={fl.label} oninput={() => (filled[fl.k] = false)} />
         {#if check.errors[fl.k]}<em>{check.errors[fl.k]}</em>{:else if fl.hint}<small>{fl.hint}</small>{/if}
       </label>
     {/each}
@@ -299,5 +503,68 @@
   }
   h3 {
     margin: 14px 0 2px;
+  }
+  .imp {
+    margin: 8px 0 4px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+  }
+  .imp summary {
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-1);
+  }
+  .imp h4 {
+    margin: 10px 0 4px;
+    font-size: 13px;
+  }
+  .imp textarea {
+    font: inherit;
+    font-size: 14px;
+    font-family: ui-monospace, monospace;
+    padding: 7px 9px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-1, #0d1322);
+    color: var(--text-0);
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+  }
+  .imp .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: flex-end;
+    margin: 4px 0;
+  }
+  .imp .fld.re {
+    width: 150px;
+  }
+  .chip.file {
+    cursor: pointer;
+  }
+  .parsed p {
+    margin: 3px 0;
+  }
+  .warntxt {
+    color: #fcd34d;
+  }
+  .att {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 6px;
+  }
+  .att .x {
+    background: none;
+    border: none;
+    color: var(--text-2);
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .fld.filled input {
+    border-color: #38bdf8;
   }
 </style>

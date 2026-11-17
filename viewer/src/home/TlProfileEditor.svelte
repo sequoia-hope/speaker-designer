@@ -1,10 +1,16 @@
 <script lang="ts">
   // A transmission line's cross-section along its length: drag the six points
-  // (driver end → terminus) or pick a named shape. Bars show the area each leg
-  // of the folded line actually gets; the line is the area the simulation uses.
-  import { TL_PROFILE_MAX, TL_PROFILE_MIN, TL_SHAPES, tlAreaAt } from './hybrid';
+  // (driver end → terminus) or pick a named shape. Shaded bands mark where each
+  // leg of the folded line runs (its walls slope so the area follows the curve);
+  // the green line is the area the simulation uses.
+  import { TL_PROFILE_MAX, TL_PROFILE_MIN, TL_SHAPES } from './hybrid';
 
-  let { profile = $bindable(), legs, path }: { profile: number[] | null | undefined; legs: number; path: { s: number[]; area: number[] } } = $props();
+  let {
+    profile = $bindable(),
+    legs,
+    path,
+    folds,
+  }: { profile: number[] | null | undefined; legs: number; path: { s: number[]; area: number[] }; folds?: number[] } = $props();
 
   const W = 320;
   const Hh = 150;
@@ -14,7 +20,12 @@
   const X = (x: number) => PAD.l + x * iw;
   const Y = (v: number) => PAD.t + ih - ((v - 0) / TL_PROFILE_MAX) * ih;
   const pts = $derived(profile ?? [1, 1, 1, 1, 1, 1]);
-  const legBars = $derived(Array.from({ length: legs }, (_, i) => ({ x0: i / legs, x1: (i + 1) / legs, v: tlAreaAt({ taper: 1, tlProfile: pts }, (i + 0.5) / legs) })));
+  // where each leg runs along the line: between the folds (evenly, before there's a geometry)
+  const legBands = $derived.by(() => {
+    const L = path.s[path.s.length - 1] || 0;
+    const cuts = folds && folds.length === legs - 1 && L > 0 ? [0, ...folds.map((f) => f / L), 1] : Array.from({ length: legs + 1 }, (_, i) => i / legs);
+    return cuts.slice(0, -1).map((x0, i) => ({ x0, x1: cuts[i + 1] }));
+  });
   // the simulated area along the path, relative to its start
   const simLine = $derived.by(() => {
     const L = path.s[path.s.length - 1] || 1;
@@ -60,8 +71,8 @@
       <line x1={PAD.l} x2={W - PAD.r} y1={Y(g)} y2={Y(g)} class="grid" />
       <text x={PAD.l - 4} y={Y(g) + 3} text-anchor="end" class="ax">{g}×</text>
     {/each}
-    {#each legBars as b, i}
-      <rect x={X(b.x0) + 1} width={X(b.x1) - X(b.x0) - 2} y={Y(b.v)} height={Y(0) - Y(b.v)} class="bar" />
+    {#each legBands as b, i}
+      <rect x={X(b.x0) + 0.5} width={Math.max(0, X(b.x1) - X(b.x0) - 1)} y={PAD.t} height={ih} class="bar" class:alt={i % 2 === 1} />
       <text x={(X(b.x0) + X(b.x1)) / 2} y={Hh - 10} text-anchor="middle" class="ax">leg {i + 1}</text>
     {/each}
     <path d={simLine} class="sim" />
@@ -92,7 +103,7 @@
     <text x={W - PAD.r} y={Hh - 1} text-anchor="end" class="ax">terminus</text>
   </svg>
   <p class="small muted">
-    {shape ? shape.hint : 'Your own shape.'} Drag the points (or focus one and use ↑/↓). Bars: the area each of the {legs} legs gets (relative to the line's start); green line: the area the simulation follows, bends included. The start is still sized to the woofer — the shape scales from there.
+    {shape ? shape.hint : 'Your own shape.'} Drag the points (or focus one and use ↑/↓). Bands: where each of the {legs} legs runs — the walls between legs slope, so the area follows your curve smoothly along every leg and round every fold; green line: the area the simulation follows (relative to the line's start), bends included. The start is still sized to the woofer — the shape scales from there.
   </p>
 </div>
 
@@ -112,7 +123,10 @@
     fill: var(--text-2, #8a94a8);
   }
   .bar {
-    fill: rgba(148, 163, 184, 0.22);
+    fill: rgba(148, 163, 184, 0.1);
+  }
+  .bar.alt {
+    fill: rgba(148, 163, 184, 0.2);
   }
   .sim {
     fill: none;

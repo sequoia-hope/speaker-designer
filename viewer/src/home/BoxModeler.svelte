@@ -3,6 +3,7 @@
   import type { DriverInfo } from './drivers';
   import type { BoxDesign } from './speakerBuild';
   import {
+    EMPTY_MODELER_ALT,
     PR_PRESETS,
     bandpassPortLengthMm,
     boxLabel,
@@ -23,10 +24,13 @@
     type BoxKind,
     type BoxSpec,
     type ModelResult,
+    type ModelerAlt,
     type Placement,
   } from './boxModel';
   import { portNoiseMs } from './speakerBuild';
   import { home, saveHome } from './homeState.svelte';
+  import MeasOverlayControl from './MeasOverlayControl.svelte';
+  import { compareToPrediction, impedanceOverlay, pickOverlay } from './measOverlay';
 
   let { box, woofer, wooferYmm = 0 }: { box: BoxDesign; woofer: DriverInfo; wooferYmm?: number } = $props();
   let placement = $state<Placement>('half');
@@ -55,9 +59,16 @@
 
   // ---- which box: sealed / vented follow (and switch) the woodworking plan above;
   //      passive radiator and bandpass boxes are modelled here only ----
-  type AltKind = 'pr' | 'bp4' | 'bp6';
   type BpSpec = Extract<BoxSpec, { kind: 'bp4' | 'bp6' }>;
-  let alt = $state<AltKind | null>(null);
+  // the PR / bandpass choices live in the design's settings, so they persist and
+  // are saved with it (SavedDesigns snapshots the settings)
+  const ds = $derived(home.designs[home.activeDesign]);
+  const mod = $derived<ModelerAlt>(ds?.modeler ?? EMPTY_MODELER_ALT);
+  function setMod(patch: Partial<ModelerAlt>) {
+    if (!ds) return;
+    ds.modeler = { ...EMPTY_MODELER_ALT, ...(ds.modeler ? ($state.snapshot(ds.modeler) as ModelerAlt) : {}), ...patch };
+  }
+  const alt = $derived(mod.alt);
   const planSpec = $derived(boxSpecOf(box));
   const kind = $derived<BoxKind>(alt ?? planSpec.kind);
   const KINDS: [BoxKind, string][] = [
@@ -70,20 +81,19 @@
   const KIND_NAME: Record<BoxKind, string> = { sealed: 'sealed', vented: 'vented', pr: 'passive-radiator', bp4: '4th-order bandpass', bp6: '6th-order bandpass' };
   function pickKind(k: BoxKind) {
     if (k === 'sealed' || k === 'vented') {
-      alt = null;
+      if (alt) setMod({ alt: null });
       const cur = home.designs[home.activeDesign];
       if (cur && cur.boxType !== k) cur.boxType = k;
-    } else alt = k;
+    } else setMod({ alt: k });
   }
   // the woofer (and count) a PR/bandpass setting was made for; a new woofer starts over
   const key = $derived(`${woofer.id}:${N}`);
 
   // ---- passive radiator ----
   type PrUser = { key: string; id: string | null; count: number | null; netL: number | null; fp: number | null };
-  let prUser = $state<PrUser>({ key: '', id: null, count: null, netL: null, fp: null });
-  const prU = $derived<PrUser>(prUser.key === key ? prUser : { key, id: null, count: null, netL: null, fp: null });
+  const prU = $derived<PrUser>(mod.pr && mod.pr.key === key ? mod.pr : { key, id: null, count: null, netL: null, fp: null });
   function setPr(patch: Partial<PrUser>) {
-    prUser = { ...prU, ...patch, key };
+    setMod({ pr: { ...prU, ...patch, key } });
   }
   const prSug = $derived(suggestPr(woofer, N));
   const prDev = $derived(PR_PRESETS.find((p) => p.id === prU.id) ?? prSug.pr);
@@ -96,8 +106,8 @@
 
   // ---- bandpass: auto-designed for the woofer until you design or edit it ----
   type BpUser = { key: string; spec: BpSpec; design: BandpassDesign | null; edited: boolean };
-  let bpUser = $state<{ bp4: BpUser | null; bp6: BpUser | null }>({ bp4: null, bp6: null });
-  let bpTarget = $state<{ key: string; lo: number; hi: number } | null>(null);
+  const bpUser = $derived({ bp4: mod.bp4 as BpUser | null, bp6: mod.bp6 as BpUser | null });
+  const bpTarget = $derived(mod.bpTarget);
   const bpDefaults = $derived(defaultBandpassTargets(woofer));
   const target = $derived(bpTarget && bpTarget.key === key ? bpTarget : { key, lo: Math.round(bpDefaults.fLowHz), hi: Math.round(bpDefaults.fHighHz) });
   const bpAuto = $derived.by((): BandpassDesign | null => {
@@ -121,17 +131,17 @@
     setTimeout(() => {
       const t = { fLowHz: target.lo, fHighHz: target.hi };
       const des = k === 'bp4' ? designBandpass4(woofer, N, t) : designBandpass6(woofer, N, t);
-      bpUser[k] = { key, spec: des.spec, design: des, edited: false };
+      setMod({ [k]: { key, spec: des.spec, design: des, edited: false } });
       designing = false;
     }, 0);
   }
   function setTarget(lo: number, hi: number) {
-    bpTarget = { key, lo, hi: Math.max(hi, Math.round(lo * 1.3)) };
+    setMod({ bpTarget: { key, lo, hi: Math.max(hi, Math.round(lo * 1.3)) } });
   }
   function setBp(patch: Record<string, number>) {
     if (!bpCur) return;
     const next = { ...($state.snapshot(bpCur.spec) as BpSpec), ...patch } as BpSpec;
-    bpUser[next.kind] = { key, spec: next, design: bpCur.design, edited: true };
+    setMod({ [next.kind]: { key, spec: next, design: bpCur.design ? ($state.snapshot(bpCur.design) as BandpassDesign) : null, edited: true } });
   }
   const dia = (a: number) => Math.round(2 * Math.sqrt(a / Math.PI) * 1000); // mm
   const area = (dMm: number) => Math.PI * (dMm / 2000) ** 2;
@@ -274,6 +284,13 @@
   }
   const finiteBass = (ys: number[]) => ys.filter((y, i) => Number.isFinite(y) && bassBand(i));
 
+  // ---- an imported measurement over the prediction (loudness / impedance graphs) ----
+  const MEAS_COLOR = '#f97316';
+  const measSpl = $derived(pickOverlay(home.measurements, home.measOverlay.box, 'spl'));
+  const measZ = $derived(pickOverlay(home.measurements, home.measOverlay.boxZ, 'impedance'));
+  const splCmp = $derived(measSpl ? compareToPrediction(pts(r.spl), measSpl, { alignBand: [200, 2000], xMin: 10, xMax: 500, smooth: 12, edges: [50, 100, 200] }) : null);
+  const zPts = $derived(measZ ? impedanceOverlay(measZ, 10, 500) : []);
+
   const chart = $derived.by(() => {
     const blue = '#38bdf8';
     const amber = '#fbbf24';
@@ -345,6 +362,13 @@
       const top = Math.max(...all);
       yStep = top > 40 ? 10 : 5;
       yMax = Math.ceil((top * 1.1) / yStep) * yStep;
+    }
+    if (graph === 'spl' && splCmp && measSpl)
+      series.push({ label: `Measured: ${measSpl.name} (${splCmp.offsetDb >= 0 ? '+' : '−'}${Math.abs(splCmp.offsetDb).toFixed(1)} dB)`, color: MEAS_COLOR, points: splCmp.points, dashed: true, width: 1.8 });
+    if (graph === 'impedance' && measZ && zPts.length) {
+      series.push({ label: `Measured: ${measZ.name}`, color: MEAS_COLOR, points: zPts, dashed: true, width: 1.8 });
+      const top = Math.max(...zPts.map((p) => p.y).filter(Number.isFinite));
+      if (top * 1.05 > yMax) yMax = Math.ceil((top * 1.05) / yStep) * yStep;
     }
     return { series: [...series, ...pinSeries], yMin, yMax, yStep, yLabel };
   });
@@ -585,7 +609,13 @@
     xTicks={[10, 20, 50, 100, 200, 500]}
     {markers}
     height={210}
+    xBand={graph === 'spl' && splCmp ? { x0: splCmp.band[0], x1: splCmp.band[1], label: 'level match' } : null}
   />
+  {#if graph === 'spl'}
+    <MeasOverlayControl sel={home.measOverlay.box} kind="spl" cmp={splCmp} alignNote="compared with the solid line; a near-field woofer or far-field speaker measurement in that band is the usual reference" testid="box-overlay" />
+  {:else if graph === 'impedance'}
+    <MeasOverlayControl sel={home.measOverlay.boxZ} kind="impedance" testid="box-overlay-z" />
+  {/if}
   <p class="small muted">{pinned.length && (graph === 'spl' || graph === 'maxspl') ? (graph === 'spl' ? 'Sound level 1 m in front, on a large baffle (half space), no room — every design at the same amplifier power and filter.' : HELP.maxspl.replace('this box', 'each box')) : HELP[graph]}</p>
 
   <div class="pinbar">

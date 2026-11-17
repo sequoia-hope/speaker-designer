@@ -17,10 +17,16 @@
 //  * revolve — a closed section (r, h) turned about +y by `sweep` radians from
 //             `phi0`, a point at angle φ being (r·sin φ, h, r·cos φ) (three.js's
 //             LatheGeometry convention).
-// then placed: optionally turned +90° about x, then moved by `offset` (mm).
+// then placed: optionally turned +90° about x, then turned by `rot` (any proper
+// rotation, rows of a 3×3), then moved by `offset` (mm). Both writers carry the
+// whole placement: STEP transforms every point and every axis / direction of its
+// lines, circles, planes, cylinders and cones; the .waffle turns each sketch's
+// plane (origin, normal, x axis) and each revolve's axis.
 
 export type P2 = [number, number];
 export type V3 = [number, number, number];
+/** rows of a proper rotation matrix (det +1) */
+export type M3 = [V3, V3, V3];
 
 export type Loop2 = { kind: 'poly'; pts: P2[] } | { kind: 'circle'; c: P2; r: number };
 export interface PrismRecipe {
@@ -41,8 +47,12 @@ export interface CadPart {
   recipe: Recipe;
   /** turn +90° about x before moving (a lathe about y then stands on its axis along z) */
   rotX90?: boolean;
+  /** then turned by this rotation (rows; must be proper — no mirror) */
+  rot?: M3;
   offset?: V3;
   material?: string;
+  /** parts of one group move as one in an exploded view (pieces that wrap round each other) */
+  group?: string;
 }
 
 const EPS = 1e-7;
@@ -81,10 +91,32 @@ function perp(n: V3): V3 {
   return norm(cross(n, a));
 }
 
+export const mulM3 = (R: M3, d: V3): V3 => [R[0][0] * d[0] + R[0][1] * d[1] + R[0][2] * d[2], R[1][0] * d[0] + R[1][1] * d[1] + R[1][2] * d[2], R[2][0] * d[0] + R[2][1] * d[1] + R[2][2] * d[2]];
+const transpose = (R: M3): M3 => [[R[0][0], R[1][0], R[2][0]], [R[0][1], R[1][1], R[2][1]], [R[0][2], R[1][2], R[2][2]]];
+export const matMul = (A: M3, B: M3): M3 => {
+  const Bt = transpose(B);
+  return A.map((row) => Bt.map((col) => row[0] * col[0] + row[1] * col[1] + row[2] * col[2])) as M3;
+};
+const det3 = (R: M3) => R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) - R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) + R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
+/** throws unless R is a proper rotation (orthonormal, det +1): a mirror would turn every solid inside out */
+export function checkRotation(R: M3, what = 'rotation') {
+  const P = matMul(R, transpose(R));
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) if (Math.abs(P[i][j] - (i === j ? 1 : 0)) > 1e-9) throw new Error(`${what}: not orthonormal`);
+  if (Math.abs(det3(R) - 1) > 1e-9) throw new Error(`${what}: a mirror, not a rotation`);
+}
+
 /** rotation of a part's placement (directions) */
-const rotDir = (p: CadPart, d: V3): V3 => (p.rotX90 ? [d[0], -d[2], d[1]] : d);
+const rotDir = (p: CadPart, d: V3): V3 => {
+  const r: V3 = p.rotX90 ? [d[0], -d[2], d[1]] : d;
+  return p.rot ? mulM3(p.rot, r) : r;
+};
+/** inverse of rotDir */
+const unrotDir = (p: CadPart, d: V3): V3 => {
+  const r = p.rot ? mulM3(transpose(p.rot), d) : d;
+  return p.rotX90 ? [r[0], r[2], -r[1]] : r;
+};
 /** full placement (points) */
-const place = (p: CadPart, q: V3): V3 => {
+export const place = (p: CadPart, q: V3): V3 => {
   const r = rotDir(p, q);
   const o = p.offset ?? [0, 0, 0];
   return [r[0] + o[0], r[1] + o[1], r[2] + o[2]];
@@ -381,6 +413,91 @@ export function partBounds(p: CadPart): { min: V3; max: V3 } {
   return { min, max };
 }
 
+/** distance from a point to a closed polygon's boundary, signed: + inside, − outside */
+function polyDepth(pts: P2[], x: number, y: number): number {
+  let inside = false;
+  let d = Infinity;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i];
+    const [xj, yj] = pts[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    const ex = xi - xj;
+    const ey = yi - yj;
+    const L2 = ex * ex + ey * ey;
+    const u = L2 > 0 ? Math.max(0, Math.min(1, ((x - xj) * ex + (y - yj) * ey) / L2)) : 0;
+    d = Math.min(d, Math.hypot(x - xj - u * ex, y - yj - u * ey));
+  }
+  return inside ? d : -d;
+}
+const loopDepth = (l: Loop2, x: number, y: number) => (l.kind === 'circle' ? l.r - Math.hypot(x - l.c[0], y - l.c[1]) : polyDepth(l.pts, x, y));
+
+/**
+ * How deep a point (mm, placed) lies inside a part's solid: + inside (the
+ * distance to the nearest face, near enough), − outside. For checking that
+ * assembled parts don't run into each other.
+ */
+export function partDepth(p: CadPart, q: V3): number {
+  const o = p.offset ?? [0, 0, 0];
+  const [x, y, z] = unrotDir(p, [q[0] - o[0], q[1] - o[1], q[2] - o[2]]);
+  const r = p.recipe;
+  if (r.kind === 'prism') {
+    let d = Math.min(z, r.depth - z, loopDepth(r.outer, x, y));
+    for (const h of r.holes) d = Math.min(d, -loopDepth(h, x, y));
+    return d;
+  }
+  const rr = Math.hypot(x, z);
+  let d = polyDepth(revolveSection(r), rr, y);
+  if (r.sweep < TAU - 1e-9) {
+    let a = (Math.atan2(x, z) - r.phi0) % TAU;
+    if (a < 0) a += TAU;
+    const off = a <= r.sweep ? Math.min(a, r.sweep - a) : -Math.min(a - r.sweep, TAU - a);
+    d = Math.min(d, rr * Math.sin(Math.max(-Math.PI / 2, Math.min(Math.PI / 2, off))));
+  }
+  return d;
+}
+
+/** bounds of several parts together */
+export function partsBounds(parts: CadPart[]): { min: V3; max: V3 } {
+  const min: V3 = [Infinity, Infinity, Infinity];
+  const max: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const p of parts) {
+    const b = partBounds(p);
+    for (let k = 0; k < 3; k++) {
+      min[k] = Math.min(min[k], b.min[k]);
+      max[k] = Math.max(max[k], b.max[k]);
+    }
+  }
+  return { min, max };
+}
+
+/**
+ * An exploded view of assembled parts: each moves straight out from the
+ * assembly's centre, along the line from that centre to its own centre, in
+ * proportion to how far out it sits — the outermost by `gapMm`. Scaling every
+ * position about one point keeps parts that were apart apart, and opens up
+ * the joints between them.
+ */
+export function explodeParts(parts: CadPart[], gapMm = 150): CadPart[] {
+  const all = partsBounds(parts);
+  const C = all.min.map((v, k) => (v + all.max[k]) / 2) as V3;
+  // a group moves by its common centre
+  const groups = new Map<string, CadPart[]>();
+  parts.forEach((p, i) => {
+    const key = p.group ?? `#${i}`;
+    groups.set(key, [...(groups.get(key) ?? []), p]);
+  });
+  const centres = parts.map((p, i) => {
+    const b = partsBounds(groups.get(p.group ?? `#${i}`)!);
+    return b.min.map((v, k) => (v + b.max[k]) / 2 - C[k]) as V3;
+  });
+  const far = Math.max(1e-9, ...centres.map((c) => len(c)));
+  const k = gapMm / far;
+  return parts.map((p, i) => {
+    const o = p.offset ?? [0, 0, 0];
+    return { ...p, offset: [o[0] + centres[i][0] * k, o[1] + centres[i][1] * k, o[2] + centres[i][2] * k] as V3 };
+  });
+}
+
 /** Lay parts out side by side on the bed plane (z ≥ 0), in rows no wider than `rowMm`. */
 export function layOut(parts: CadPart[], gapMm = 20, rowMm = 1200): CadPart[] {
   let x = 0;
@@ -425,6 +542,7 @@ const stepString = (s: string) => s.replace(/[^ -~]/g, '_').replace(/'/g, "''");
 export function writeStep(parts: CadPart[], fileName: string): string {
   if (!parts.length) throw new Error('STEP export: nothing to export');
   const breps = parts.map((p) => {
+    if (p.rot) checkRotation(p.rot, `STEP export: ${p.name}`);
     const b = partBrep(p);
     const bad = brepProblems(b);
     if (bad.length) throw new Error(`STEP export: ${bad.slice(0, 3).join('; ')}`);
@@ -618,6 +736,7 @@ export function writeWaffle(parts: CadPart[], docName: string): string {
   const bodyMaterials: Record<string, string> = {};
   const usedMaterials = new Set<string>();
   for (const p of parts) {
+    if (p.rot) checkRotation(p.rot, `Waffle export: ${p.name}`);
     const r = p.recipe;
     let fid: string;
     if (r.kind === 'prism') {

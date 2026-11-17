@@ -703,6 +703,57 @@ export interface BandpassDesign {
   notes: string[];
 }
 
+/**
+ * The box modeler's passive-radiator / bandpass choices for one design, kept in
+ * DesignSettings so they persist and travel with saved designs. Each part
+ * remembers the woofer it was made for (`key` = "wooferId:count"); a different
+ * woofer ignores it and starts the PR/bandpass design over.
+ */
+export interface ModelerAlt {
+  /** a PR / bandpass box modelled instead of the plan's sealed/vented box; null = follow the plan */
+  alt: 'pr' | 'bp4' | 'bp6' | null;
+  pr: { key: string; id: string | null; count: number | null; netL: number | null; fp: number | null } | null;
+  bp4: ModelerBp | null;
+  bp6: ModelerBp | null;
+  bpTarget: { key: string; lo: number; hi: number } | null;
+}
+export interface ModelerBp {
+  key: string;
+  spec: Extract<BoxSpec, { kind: 'bp4' | 'bp6' }>;
+  design: BandpassDesign | null;
+  edited: boolean;
+}
+
+export const EMPTY_MODELER_ALT: ModelerAlt = { alt: null, pr: null, bp4: null, bp6: null, bpTarget: null };
+
+const fin = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+const numOrNull = (x: unknown) => (fin(x) ? x : null);
+
+/** Tidy a stored ModelerAlt (localStorage or an imported file): malformed parts fall back to the defaults. */
+export function sanitizeModelerAlt(raw: unknown): ModelerAlt | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, any>;
+  const out: ModelerAlt = { ...EMPTY_MODELER_ALT };
+  if (r.alt === 'pr' || r.alt === 'bp4' || r.alt === 'bp6') out.alt = r.alt;
+  if (r.pr && typeof r.pr === 'object' && typeof r.pr.key === 'string')
+    out.pr = { key: r.pr.key, id: typeof r.pr.id === 'string' ? r.pr.id : null, count: numOrNull(r.pr.count), netL: numOrNull(r.pr.netL), fp: numOrNull(r.pr.fp) };
+  for (const k of ['bp4', 'bp6'] as const) {
+    const b = r[k];
+    if (!b || typeof b !== 'object' || typeof b.key !== 'string' || !b.spec || b.spec.kind !== k) continue;
+    const s = b.spec;
+    const ok =
+      k === 'bp4'
+        ? [s.rearL, s.frontL, s.fbHz, s.portAreaM2].every(fin)
+        : [s.rearL, s.frontL, s.fbRearHz, s.fbFrontHz, s.rearPortAreaM2, s.frontPortAreaM2].every(fin);
+    if (!ok) continue;
+    const design = b.design && typeof b.design === 'object' && b.design.spec?.kind === k && Array.isArray(b.design.notes) ? (b.design as BandpassDesign) : null;
+    out[k] = { key: b.key, spec: s, design, edited: !!b.edited };
+  }
+  const t = r.bpTarget;
+  if (t && typeof t === 'object' && typeof t.key === 'string' && fin(t.lo) && fin(t.hi)) out.bpTarget = { key: t.key, lo: t.lo, hi: t.hi };
+  return out;
+}
+
 /** Physical length of one round port of this area tuning volL to fbHz (one flanged end), mm. */
 export function bandpassPortLengthMm(volL: number, fbHz: number, areaM2: number): number {
   const leff = (areaM2 * (C / (2 * Math.PI * fbHz)) ** 2) / (volL / 1000);

@@ -1,4 +1,5 @@
 import type { VentAlignment, PortEnds } from './speakerBuild';
+import type { ModelerAlt } from './boxModel';
 // Catalogue of speaker designs you can build. Each is a starting point for the
 // planner (drivers + box + shape); the Speakers tab lets you tweak a copy.
 
@@ -27,6 +28,8 @@ export interface DesignSettings {
   sealedFill?: number;
   /** vented: port ends */
   portEnds?: PortEnds;
+  /** box modeler: passive-radiator / bandpass choices (absent = follow the plan, auto-design) */
+  modeler?: ModelerAlt;
 }
 
 export interface DesignPreset {

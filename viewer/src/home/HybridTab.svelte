@@ -1,13 +1,18 @@
 <script lang="ts">
   import MiniChart from './MiniChart.svelte';
+  import DirectivityCard from './DirectivityCard.svelte';
+  import { COVERAGE_RANGE } from './directivity';
   import Speaker3D from './Speaker3D.svelte';
-  import { cadStep, cadWaffle, fitTestPieces, platesDxf, printEstimate, printedCadParts, printPieces, printPiecesStl } from './printExport';
+  import { CAD_ARRANGEMENTS, cadStep, cadWaffle, fitTestPieces, plateNestParts, platesDxf, printEstimate, printedCadParts, printPieces, printPiecesStl, type CadArrangement } from './printExport';
+  import { nestPanels, nestedDxf } from './sheetLayout';
   import { downloadBlob } from './exporters';
   import type { Snippet } from 'svelte';
   import { home, printedParams, saveHome } from './homeState.svelte';
   import { allDrivers, findDriver } from './drivers';
   import { trapTuningHz } from './lineNetwork';
   import TlProfileEditor from './TlProfileEditor.svelte';
+  import MeasOverlayControl from './MeasOverlayControl.svelte';
+  import { compareToPrediction, impedanceOverlay, pickOverlay } from './measOverlay';
   import { printedAsModel, runModel } from './boxModel';
   import { autoFitAsync, MOUTH_NOISE_MS, buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, type FitChange, type HybridParams, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
   import { cabinetDims, driverFor } from './hybridModels';
@@ -25,6 +30,14 @@
   const tweeters = $derived(allDrivers().filter((x) => x.role === 'tweeter'));
   const d = $derived(driverFor(p));
   const geo = $derived(buildGeometry(p, d));
+  // which waveguide coverages still build (a design that doesn't build yet doesn't rule any out)
+  const guideFitMap = $derived.by(() => {
+    const m = new Map<number, boolean>();
+    if (!geo.fits) return m;
+    for (let cov = COVERAGE_RANGE.min; cov <= COVERAGE_RANGE.max; cov += COVERAGE_RANGE.step) m.set(cov, buildGeometry({ ...p, tweeterWaveguide: true, coverageDeg: cov, head: undefined }, d).fits);
+    return m;
+  });
+  const guideFits = (cov: number) => guideFitMap.get(cov) ?? true;
   const plan = $derived(planPrint(geo, home.hybrid.printer));
   const issues = $derived(buildIssues(p, geo, d, plan, home.hybrid.printer, isSub));
   const solidPath = $derived(
@@ -135,12 +148,15 @@
   const est = $derived(pieces.length ? printEstimate(pieces, home.hybrid.printer) : null);
   const fmtH = (h: number) => (h < 1 ? `${Math.round(h * 60)} min` : h < 48 ? `${h.toFixed(1)} h` : `${(h / 24).toFixed(1)} days`);
   let cadErr = $state<string | null>(null);
+  /** CAD parts laid out flat (a print plate), as assembled, or exploded */
+  let cadHow = $state<CadArrangement>('flat');
   function cadDownload(kind: 'step' | 'waffle') {
     cadErr = null;
     try {
-      const parts = printedCadParts(pieces, geo, p, d);
-      if (kind === 'step') downloadBlob(`${fileBase}.step`, cadStep(parts, fileBase), 'model/step');
-      else downloadBlob(`${fileBase}.waffle`, cadWaffle(parts, entry?.name ?? fileBase), 'application/json');
+      const parts = printedCadParts(pieces, geo, p, d, 'PETG', cadHow);
+      const base = cadHow === 'flat' ? fileBase : `${fileBase}-${cadHow}`;
+      if (kind === 'step') downloadBlob(`${base}.step`, cadStep(parts, base), 'model/step');
+      else downloadBlob(`${base}.waffle`, cadWaffle(parts, entry?.name ?? fileBase), 'application/json');
     } catch (e) {
       cadErr = (e as Error).message;
     }
@@ -172,6 +188,27 @@
   );
   const title = $derived(isSub ? 'Printed horn sub' : (entry?.name ?? 'Printed speaker'));
   const COLORS = ['#38bdf8', '#34d399', '#f472b6'];
+  // an imported measurement over the simulated response (one cabinet) / impedance
+  const MEAS_COLOR = '#f97316';
+  const measSpl = $derived(pickOverlay(home.measurements, home.measOverlay.printed, 'spl'));
+  const measZ = $derived(pickOverlay(home.measurements, home.measOverlay.printedZ, 'impedance'));
+  const splCmp = $derived(
+    measSpl && r0
+      ? compareToPrediction(
+          r0.freqs.map((f, k) => ({ x: f, y: r0.spl[k] })),
+          measSpl,
+          isSub
+            ? { alignBand: [40, 120], xMin: 15, xMax: 300, smooth: 12, edges: [30, 60, 120] }
+            : { alignBand: [200, 2000], xMin: 20, xMax: 600, smooth: 12, edges: [50, 100, 200] }
+        )
+      : null
+  );
+  const measSeries = $derived(
+    splCmp && measSpl
+      ? [{ label: `Measured: ${measSpl.name} (${splCmp.offsetDb >= 0 ? '+' : '−'}${Math.abs(splCmp.offsetDb).toFixed(1)} dB)`, color: MEAS_COLOR, dashed: true, width: 1.8, points: splCmp.points }]
+      : []
+  );
+  const zPts = $derived(measZ ? impedanceOverlay(measZ, 20, 600) : []);
   const sc = $derived(Math.min(1, 520 / Math.max(geo.W, geo.H)));
   const mm = (v: number) => `${Math.round(v)} mm`;
   const inch = (v: number) => `${(v / 25.4).toFixed(1)}″`;
@@ -265,6 +302,21 @@
       {/if}
     </section>
 
+    {#if tweeter && tw.mount !== 'none'}
+      <DirectivityCard
+        {p}
+        {tweeter}
+        woofer={d}
+        wg={twWg}
+        fits={guideFits}
+        onCoverage={(cov) => {
+          p.tweeterWaveguide = cov != null;
+          if (cov != null) p.coverageDeg = cov;
+          p.head = undefined;
+        }}
+      />
+    {/if}
+
     {#if sims.length}
       <section class="card">
         <h2>Output (simulated from this geometry)</h2>
@@ -282,7 +334,9 @@
               ...pinSeries,
               ...(r0.mouthSpl && p.type !== 'tapped' ? [{ label: 'Cone (front)', color: '#94a3b8', dashed: true, width: 1.3, points: r0.freqs.map((f, k) => ({ x: f, y: r0.coneSpl![k] })) }] : []),
               ...(r0.mouthSpl ? [{ label: p.type === 'tl' ? 'Terminus' : 'Horn mouth', color: '#f472b6', dashed: true, width: 1.3, points: r0.freqs.map((f, k) => ({ x: f, y: r0.mouthSpl![k] })) }] : []),
+              ...measSeries,
             ]}
+            xBand={splCmp ? { x0: splCmp.band[0], x1: splCmp.band[1], label: 'level match' } : null}
             xMin={isSub ? 15 : 20}
             xMax={isSub ? 300 : 600}
             yMin={isSub ? 80 : 50}
@@ -292,6 +346,13 @@
             xTicks={isSub ? [20, 30, 50, 100, 200] : [20, 50, 100, 200, 500]}
             markers={[{ x: r0.f3, label: `f3 ${r0.f3.toFixed(0)} Hz` }, ...(r0.resonances ?? []).slice(0, 4).map((f) => ({ x: f, label: `${Math.round(f)}`, color: '#a78bfa' }))]}
           />
+          <MeasOverlayControl
+            sel={home.measOverlay.printed}
+            kind="spl"
+            cmp={splCmp}
+            alignNote={isSub ? 'compared with one cabinet; measure it near-field at the mouth or ground-plane' : 'compared with the total; a far-field (gated) or merged near-field measurement is the usual reference'}
+            testid="printed-overlay"
+          />
         {:else}
           {@const ys = outGraph === 'z' ? r0.impedance! : outGraph === 'gd' ? r0.groupDelayMs! : r0.mouthVelocity!}
           {@const top = Math.max(...ys.filter((_, i) => r0.freqs[i] > 20 && Number.isFinite(ys[i])))}
@@ -299,15 +360,17 @@
             series={[
               { label: outGraph === 'z' ? 'Impedance' : outGraph === 'gd' ? 'Group delay' : 'Peak air speed at 2.83 V', color: COLORS[0], points: r0.freqs.map((f, k) => ({ x: f, y: ys[k] })) },
               ...(outGraph === 'vel' ? [{ label: `${MOUTH_NOISE_MS} m/s: noise starts`, color: '#fbbf24', dashed: true, width: 1.3, points: [{ x: 15, y: MOUTH_NOISE_MS }, { x: 600, y: MOUTH_NOISE_MS }] }] : []),
+              ...(outGraph === 'z' && measZ && zPts.length ? [{ label: `Measured: ${measZ.name}`, color: MEAS_COLOR, dashed: true, width: 1.8, points: zPts }] : []),
             ]}
             xMin={20}
             xMax={600}
             yMin={0}
-            yMax={Math.ceil((Math.max(top, outGraph === 'vel' ? MOUTH_NOISE_MS : 0) * 1.1) / 5) * 5 || 5}
+            yMax={Math.ceil((Math.max(top, outGraph === 'vel' ? MOUTH_NOISE_MS : 0, outGraph === 'z' && measZ ? Math.max(0, ...zPts.map((q) => q.y)) : 0) * 1.1) / 5) * 5 || 5}
             yStep={outGraph === 'z' && top > 60 ? 20 : 5}
             yLabel={outGraph === 'z' ? 'Ω' : outGraph === 'gd' ? 'ms' : 'm/s'}
             xTicks={[20, 50, 100, 200, 500]}
           />
+          {#if outGraph === 'z'}<MeasOverlayControl sel={home.measOverlay.printedZ} kind="impedance" testid="printed-overlay-z" />{/if}
         {/if}
         {#if !isSub}
           <div class="chips">
@@ -458,7 +521,7 @@
             <input id="h-tap" type="range" min="0.2" max="2.5" step="0.05" bind:value={p.taper} />
           </div>
         {:else}
-          <TlProfileEditor bind:profile={p.tlProfile} legs={p.legs % 2 === 0 ? p.legs : p.legs + 1} path={geo.path} />
+          <TlProfileEditor bind:profile={p.tlProfile} legs={p.legs % 2 === 0 ? p.legs : p.legs + 1} path={geo.path} folds={geo.foldS} />
         {/if}
         <div class="field">
           <label for="h-fold">Woofer position along the line</label>
@@ -587,12 +650,20 @@
       <div class="chips" style="margin-bottom:8px">
         <button class="chip" onclick={() => downloadBlob(`${fileBase}-print-pieces.stl`, printPiecesStl(printPieces(geo, p, plan, d, head)), 'model/stl')} disabled={!geo.fits}>⬇ Print pieces (STL)</button>
         <button class="chip" onclick={() => downloadBlob(`${fileBase}-plates.dxf`, platesDxf(geo, p, d), 'application/dxf')} disabled={!geo.fits}>⬇ Plates &amp; dividers (DXF)</button>
+        {#if !geo.shell && p.plateMaterial !== 'glass'}
+          <button class="chip" data-testid="plates-nested" onclick={() => { const np = plateNestParts(geo, p, d, 2); downloadBlob(`${fileBase}-plates-nested.dxf`, nestedDxf(np, nestPanels(np, { sheetW: 1220, sheetH: 2440 })), 'application/dxf'); }} disabled={!geo.fits}>⬇ {p.plateMaterial === 'acrylic' ? 'Acrylic plates' : p.plateMaterial === 'sandwich' ? 'Plywood strips' : p.plateMaterial === 'mdf19' ? 'MDF plates' : 'Plywood plates'} nested on 4×8 sheets, pair (DXF)</button>
+        {/if}
         <button class="chip" data-testid="cad-step" onclick={() => cadDownload('step')} disabled={!geo.fits}>⬇ All parts (STEP)</button>
         <button class="chip" data-testid="cad-waffle" onclick={() => cadDownload('waffle')} disabled={!geo.fits}>⬇ Waffle Iron (.waffle)</button>
         <button class="chip" onclick={() => downloadBlob(`${fileBase}-fit-test.stl`, printPiecesStl(fitTestPieces(d, geo.wallMm, geo.tweeter && geo.driver.face === 'front' ? geo.tweeter.holeR : undefined)), 'model/stl')}>⬇ Driver fit-test ring (STL)</button>
       </div>
+      <div class="seg" style="margin:0 0 8px" role="radiogroup" aria-label="CAD layout" data-testid="cad-how">
+        {#each CAD_ARRANGEMENTS as a (a.id)}
+          <button role="radio" aria-checked={cadHow === a.id} class:on={cadHow === a.id} onclick={() => (cadHow = a.id)}>{a.label}</button>
+        {/each}
+      </div>
       {#if cadErr}<p class="small bad" role="alert">Couldn't write the CAD file: {cadErr}</p>{/if}
-      <p class="small muted" style="margin-top:0">STEP and .waffle hold every printed piece and every flat part as an exact solid (true circles and cones, not a mesh), named and laid out side by side in millimetres — open the STEP in any CAD program, or the .waffle in Waffle Iron, where each part is an editable sketch + extrude/revolve with its material (so it reports masses). The fit-test ring is a 15-minute print of the driver's cut-out: check the driver drops in before printing the cabinet.</p>
+      <p class="small muted" style="margin-top:0">STEP and .waffle hold every printed piece and every flat part as an exact solid (true circles and cones, not a mesh), in millimetres — laid out side by side (Flat, like a print plate), where each sits in the finished speaker (Assembled, every copy of a part), or pulled apart (Exploded). Open the STEP in any CAD program, or the .waffle in Waffle Iron, where each part is an editable sketch + extrude/revolve with its material (so it reports masses). The fit-test ring is a 15-minute print of the driver's cut-out: check the driver drops in before printing the cabinet.</p>
       <p class="small muted" style="margin-top:0">The STL holds every piece as the plan splits it, laid out side by side in millimetres (your slicer can split them into objects). The front wall prints flat as its own plate — its round holes then need no support — and glues to the cores.</p>
       <div class="bedin">
         {#each [['bedX', 'Bed X', 1], ['bedY', 'Bed Y', 1], ['maxZ', 'Max Z', 1], ['margin', 'Margin', 1], ['nozzle', 'Nozzle', 0.1], ['lineWidth', 'Line width', 0.05], ['layerH', 'Layer', 0.05], ['flow', 'Flow mm³/s', 1], ['perimeters', 'Perimeters', 1], ['infillPct', 'Infill %', 5], ['filamentDensity', 'g/cm³', 0.01], ['pricePerKg', 'Price / kg', 1], ['watts', 'Printer W', 10], ['kwhPrice', 'Price / kWh', 0.01]] as [k, lbl, st]}

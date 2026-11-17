@@ -7,6 +7,7 @@
   import { pointInPoly, type HeadGeometry, type PrintedModel, type Pt, type RoundWaveguide } from './hybrid';
   import type { DriverInfo } from './drivers';
   import { fmtInFrac } from './roomAcoustics';
+  import { applyPlace, boxLayout, POD_PAD_MM, printedLayout, SHELL_PEDESTAL_MM, shellLayout, waveguidePlace, WAVEGUIDE_FLANGE_MM, type Box3mm, type Place } from './assembly';
 
   let {
     plan = null,
@@ -116,6 +117,12 @@
     return mesh;
   }
 
+  /** Box panel where the assembly puts it (assembly.ts, mm), moved by (dx, dy, dz) metres for the exploded view. */
+  function placedPanel(id: string, color: number, b: Box3mm, dx = 0, dy = 0, dz = 0) {
+    const s = 0.001;
+    return panel(id, color, b.min[0] * s + dx, b.max[0] * s + dx, b.min[1] * s + dy, b.max[1] * s + dy, b.min[2] * s + dz, b.max[2] * s + dz);
+  }
+
   /** Box panel from min/max corners in metres. */
   function panel(id: string, color: number, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number) {
     const g = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0);
@@ -157,13 +164,11 @@
     return sh;
   }
 
-  /** Extrude a profile shape across the width: profile x → depth (z, front at 0), y up, extrusion along x. */
-  function extrudeProfile(shape: THREE.Shape, W: number, x0: number, widthMm: number, m: THREE.Material, id: string) {
+  /** Extrude a profile shape across the width (assembly.ts `across`: profile x → depth, front at z = 0, y up, extrusion along x). */
+  function extrudeProfile(shape: THREE.Shape, at: Place, widthMm: number, m: THREE.Material, id: string) {
     const s = 0.001;
     const mesh = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth: widthMm * s, bevelEnabled: false, curveSegments: 6 }), m));
-    // shape x → +z, extrusion → −x
-    mesh.rotation.y = -Math.PI / 2;
-    mesh.position.set((x0 + widthMm) * s, 0, -W * s);
+    applyPlace(mesh, at, s);
     mesh.userData.partId = id;
     return mesh;
   }
@@ -200,20 +205,18 @@
     const sec: [number, number][] = [
       ...wg.profile,
       [wg.flangeR, D],
-      [wg.flangeR, D - 3],
-      [wg.R + wg.wallMm, D - 3],
+      [wg.flangeR, D - WAVEGUIDE_FLANGE_MM],
+      [wg.R + wg.wallMm, D - WAVEGUIDE_FLANGE_MM],
       [r0 + wg.wallMm, 0],
       [r0, 0],
     ];
-    // lathe +y → −z after the flip: y = 0 at the face, y = D at the throat
-    const pts = sec.map(([r, z]) => new THREE.Vector2(r * s, (D - z) * s));
+    // lathe +y (throat at 0, face at D) turned onto +z, the flange's back on the face (assembly.ts)
+    const pts = sec.map(([r, z]) => new THREE.Vector2(r * s, z * s));
     const flare = new THREE.Mesh(new THREE.LatheGeometry(pts, 64), mat(PRINT, id, { roughness: 0.5 }));
-    flare.rotation.x = Math.PI / 2;
-    flare.scale.y = -1;
-    flare.position.z = faceZ;
+    applyPlace(flare, waveguidePlace(D, 0, faceZ / s), s);
     g.add(flare);
     // tweeter at the throat: its faceplate (r0 is the faceplate + 1 mm) flush in the recess
-    const tz = faceZ - D * s;
+    const tz = faceZ + (WAVEGUIDE_FLANGE_MM - D) * s;
     const pr = (tw.frameDiaMm / 2) * s;
     const plate = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, wg.recessMm * s, 48), mat(0x1c1d21, 'tweeter', { roughness: 0.45 }));
     plate.rotation.x = Math.PI / 2;
@@ -260,13 +263,13 @@
       addTweeter(tg, tweeter, s, { rebateDepthMm: tweeter.flangeMm ?? 3 });
       inner.add(tg);
     }
-    inner.position.y = (3 + h.h / 2) * s;
+    inner.position.y = (POD_PAD_MM + h.h / 2) * s;
     inner.traverse((m) => {
       if (!m.userData.partId && (m as THREE.Mesh).isMesh) m.userData.partId = 'head';
     });
     g.add(inner);
-    const pad = new THREE.Mesh(new THREE.BoxGeometry(h.w * 0.6 * s, 3 * s, h.d * 0.6 * s), mat(0x111111, 'head', { roughness: 0.9 }));
-    pad.position.set(0, 1.5 * s, frontZ - (h.d / 2) * s);
+    const pad = new THREE.Mesh(new THREE.BoxGeometry(h.w * 0.6 * s, POD_PAD_MM * s, h.d * 0.6 * s), mat(0x111111, 'head', { roughness: 0.9 }));
+    pad.position.set(0, (POD_PAD_MM / 2) * s, frontZ - (h.d / 2) * s);
     pad.userData.partId = 'head';
     g.add(pad);
     g.position.y = topY;
@@ -283,15 +286,14 @@
     viewer.content.add(root);
     const speaker = new THREE.Group();
     root.add(speaker);
-    const pedH = 60;
-    const cy = (pedH + sg.Rmax) * s;
-    // revolve the section (r, z) about the axis: lathe +y → world +z, front land at z = 0
-    const lathe = new THREE.LatheGeometry(sg.section.map(([r, z]) => new THREE.Vector2(r * s, (z - sg.zFront) * s)), 96);
+    const pedH = SHELL_PEDESTAL_MM;
+    const sl = shellLayout(sg);
+    const cy = sl.cy * s;
+    // revolve the section (r, z) about the axis: lathe +y → world +z, the back pole at z = −zFront
+    // and the front land at z = 0, facing the listener (assembly.ts)
+    const lathe = new THREE.LatheGeometry(sg.section.map(([r, z]) => new THREE.Vector2(r * s, z * s)), 96);
     const shell = withEdges(new THREE.Mesh(lathe, mat(PRINT, 'core', { roughness: 0.55 })));
-    // lathe axis (y) → world z after this turn: z' = y, so the back pole (y < 0) lands at −z
-    // and the front land at z = 0, facing the listener
-    shell.rotation.x = Math.PI / 2;
-    shell.position.y = cy;
+    applyPlace(shell, sl.shell, s);
     speaker.add(shell);
     // pedestal: a printed ring cradle and a foot
     const ring = new THREE.Mesh(new THREE.CylinderGeometry(sg.Rmax * 0.32 * s, sg.Rmax * 0.4 * s, pedH * s, 48, 1, true), mat(PRINT, 'stand', { side: THREE.DoubleSide }));
@@ -303,7 +305,7 @@
       wg.position.set(0, cy, ex * 1.6);
       speaker.add(wg);
       addWoofer(wg, woofer, s, { rebateDepthMm: null });
-      if (pm.head) speaker.add(headGroup(pm.head, -pm.head.setbackMm * s + ex * 0.4, cy + sg.Rmax * s + ex * 0.5));
+      if (pm.head) speaker.add(headGroup(pm.head, -pm.head.setbackMm * s + ex * 0.4, sl.topY * s + ex * 0.5));
     }
     const grid = new THREE.GridHelper(Math.max(1.6, sg.Rmax * s * 6), 16, 0x2b3a5c, 0x1a2541);
     grid.position.set(0, -0.001, -(sg.zFront * s) / 2);
@@ -363,10 +365,12 @@
     const printMat = mat(PRINT, 'core', { roughness: 0.6 });
     // cores side by side with plywood dividers between; explode spreads them
     const plate = p.plateMm;
-    const coreX = (c: number) => -g.Etot / 2 + c * (g.coreMm + plate);
+    // where every piece sits: shared with the assembled CAD export
+    const lay = printedLayout(g, plate);
+    const coreX = lay.coreX;
     const spread = (c: number) => (c - (g.cores - 1) / 2) * ex * 0.25 / s;
     for (let c = 0; c < g.cores; c++) {
-      for (const sh of coreShapes) speaker.add(extrudeProfile(sh, W, coreX(c) + spread(c), g.coreMm, printMat, 'core'));
+      for (const sh of coreShapes) speaker.add(extrudeProfile(sh, lay.across(coreX(c) + spread(c), g.coreMm), g.coreMm, printMat, 'core'));
       // plywood strips (bends construction), drawn only where they're not inside a printed cap
       for (const st of g.strips) {
         if (/Driver baffle/.test(st.name)) continue;
@@ -376,20 +380,32 @@
           if (x1 > cap.x0 && x1 <= cap.x1) x1 = cap.x0;
         }
         if (x1 - x0 < 1) continue;
-        const b = withEdges(new THREE.Mesh(new THREE.BoxGeometry(g.coreMm * s, (st.rect.y1 - st.rect.y0) * s, (x1 - x0) * s), mat(PLY_FACE, 'strip')));
-        b.position.set((coreX(c) + spread(c) + g.coreMm / 2) * s, ((st.rect.y0 + st.rect.y1) / 2) * s, ((x0 + x1) / 2 - W) * s);
-        b.userData.partId = 'strip';
-        speaker.add(b);
+        if (st.line) {
+          // a sloped strip (tapering line): a flat board along its centre line, tilted
+          const ln = st.line;
+          const yAt = (x: number) => (ln ? ln.y0 + ((ln.y1 - ln.y0) * (x - ln.x0)) / (ln.x1 - ln.x0 || 1) : (st.rect.y0 + st.rect.y1) / 2);
+          const dy = yAt(x1) - yAt(x0);
+          const thick = ln ? st.thickMm : st.rect.y1 - st.rect.y0;
+          const b = withEdges(new THREE.Mesh(new THREE.BoxGeometry(g.coreMm * s, thick * s, Math.hypot(x1 - x0, dy) * s), mat(PLY_FACE, 'strip')));
+          b.position.set((coreX(c) + spread(c) + g.coreMm / 2) * s, ((yAt(x0) + yAt(x1)) / 2) * s, ((x0 + x1) / 2 - W) * s);
+          // profile x → world z, so rising toward the front (+z) is a rotation about x by −atan
+          if (ln) b.rotation.x = -Math.atan2(dy, x1 - x0);
+          b.userData.partId = 'strip';
+          speaker.add(b);
+        } else {
+          const X0 = coreX(c) + spread(c);
+          speaker.add(placedPanel('strip', PLY_FACE, lay.profileBox(x0, x1, st.rect.y0, st.rect.y1, X0, X0 + g.coreMm)));
+        }
       }
       if (c < g.cores - 1) {
         for (const sh of dividerShapes)
-          speaker.add(extrudeProfile(sh, W, coreX(c) + g.coreMm + (spread(c) + spread(c + 1)) / 2, plate, mat(pm.dividerColor ?? PLY_ALT, 'divider'), 'divider'));
+          speaker.add(extrudeProfile(sh, lay.across(lay.dividerX(c) + (spread(c) + spread(c + 1)) / 2, plate), plate, mat(pm.dividerColor ?? PLY_ALT, 'divider'), 'divider'));
       }
     }
     // outer plates
     for (const side of [-1, 1]) {
-      const x0 = side < 0 ? -g.Etot / 2 - plate + spread(0) - ex / s : g.Etot / 2 + spread(g.cores - 1) + ex / s;
-      speaker.add(extrudeProfile(profileShape(plateOutline(W, H), [], s), W, x0, plate, mat(pm.plateColor, 'plate'), 'plate'));
+      const x0 = lay.plateX(side as -1 | 1) + (side < 0 ? spread(0) - ex / s : spread(g.cores - 1) + ex / s);
+      speaker.add(extrudeProfile(profileShape(plateOutline(W, H), [], s), lay.across(x0, plate), plate, mat(pm.plateColor, 'plate'), 'plate'));
     }
     // a tapped horn: the stretch of fold wall under the woofer, with its hole, full width
     if (down) {
@@ -405,8 +421,7 @@
       sh.holes.push(hole);
       const m = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: t * s, bevelEnabled: false, curveSegments: 48 }), mat(PRINT, 'front')));
       // local (across, v, thickness) → world (x, y = thickness, z = −v)
-      m.rotation.x = -Math.PI / 2;
-      m.position.y = (dv.y - t / 2) * s;
+      applyPlace(m, lay.downWall(dv.y - t / 2), s);
       m.userData.partId = 'front';
       speaker.add(m);
     }
@@ -442,7 +457,8 @@
         cut(dv.y, woofer.cutoutDiaMm / 2);
         if (g.tweeter && dv.face === 'front') cut(g.tweeter.y, g.tweeter.holeR);
         const m = withEdges(new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: (wx1 - wx0) * s, bevelEnabled: false, curveSegments: 48 }), mat(wood ? PLY_FACE : PRINT, 'front')));
-        m.position.z = (wx0 - W) * s + (dv.face === 'front' ? ex * 0.6 : 0);
+        applyPlace(m, lay.frontWall(wx0), s);
+        m.position.z += dv.face === 'front' ? ex * 0.6 : 0;
         m.userData.partId = 'front';
         speaker.add(m);
       }
@@ -460,10 +476,11 @@
     }
     // resonance traps: printed Helmholtz bottles on the outside of the left plate, neck through it
     for (const tr of g.traps ?? []) {
-      const xOut = -g.Etot / 2 - plate + spread(0) - ex / s;
-      const bottle = withEdges(new THREE.Mesh(new THREE.CylinderGeometry((tr.diaMm / 2) * s, (tr.diaMm / 2) * s, tr.lenMm * s, 40), mat(PRINT, 'trap')));
-      bottle.rotation.z = Math.PI / 2;
-      bottle.position.set((xOut - 4 - tr.lenMm / 2) * s - ex * 0.5, tr.y * s, (tr.x - W) * s);
+      const xOut = lay.plateX(-1) + spread(0) - ex / s;
+      // a cylinder along +z from 0, as the printed piece, laid across by the assembly
+      const bottle = withEdges(new THREE.Mesh(new THREE.CylinderGeometry((tr.diaMm / 2) * s, (tr.diaMm / 2) * s, tr.lenMm * s, 40).rotateX(Math.PI / 2).translate(0, 0, (tr.lenMm / 2) * s), mat(PRINT, 'trap')));
+      applyPlace(bottle, lay.trap(tr), s);
+      bottle.position.x += (spread(0) - ex / s) * s - ex * 0.5;
       const neckR = Math.sqrt(tr.neckAreaCm2 / Math.PI) * 10;
       const neck = new THREE.Mesh(new THREE.CylinderGeometry(neckR * s, neckR * s, (tr.neckLenMm + plate) * s, 24), mat(0xb4b4bb, 'trap'));
       neck.rotation.z = Math.PI / 2;
@@ -684,8 +701,10 @@
     }
 
     // ---- shell ----
-    const zf = -bt; // inside face of the baffle
-    const zb = -D + t; // inside face of the back
+    // where every panel sits: shared with the assembled CAD export
+    const lay = boxLayout(box);
+    const zf = lay.zf * s; // inside face of the baffle
+    const zb = lay.zb * s; // inside face of the back
     // back panel with its real cut-outs, at the spots the planner checked for
     // clearance (fitInternals): terminal cup or binding posts, and rear ports
     const rearPort = plan.box.rearPorts.length && plan.box.port ? plan.box.port : null;
@@ -729,21 +748,18 @@
       m.userData.partId = 'back';
       speaker.add(m);
     }
-    speaker.add(panel('side', color, -W / 2 - ex, -W / 2 + t - ex, 0, H, zb, zf));
-    speaker.add(panel('side', color, W / 2 - t + ex, W / 2 + ex, 0, H, zb, zf));
-    speaker.add(panel('topbottom', color2, -W / 2 + t, W / 2 - t, H - t + ex, H + ex, zb, zf));
-    speaker.add(panel('topbottom', color2, -W / 2 + t, W / 2 - t, -ex * 0.4, t - ex * 0.4, zb, zf));
+    speaker.add(placedPanel('side', color, lay.side(-1), -ex));
+    speaker.add(placedPanel('side', color, lay.side(1), ex));
+    speaker.add(placedPanel('topbottom', color2, lay.top, 0, ex));
+    speaker.add(placedPanel('topbottom', color2, lay.bottom, 0, -ex * 0.4));
 
     // window brace
-    if (box.braceFromBaffleMm != null) {
-      // front face where the planner put it (clear of magnets and ports)
-      const z1 = zf - box.braceFromBaffleMm * s;
+    if (lay.brace) {
+      // front face where the planner put it (clear of magnets and ports), above the false floor in a tower
+      const z1 = lay.brace.max[2] * s;
       const shape = new THREE.Shape();
-      const x0 = -W / 2 + t;
-      const x1 = W / 2 - t;
-      // above the false floor in a tower
-      const y0 = t + (box.deadSpaceMm > 0 ? box.deadSpaceMm * s + t : 0);
-      const y1 = H - t;
+      const [x0, y0] = [lay.brace.min[0] * s, lay.brace.min[1] * s];
+      const [x1, y1] = [lay.brace.max[0] * s, lay.brace.max[1] * s];
       shape.moveTo(x0, y0);
       shape.lineTo(x1, y0);
       shape.lineTo(x1, y1);
@@ -764,8 +780,7 @@
 
     // tower false floor (sand below)
     if (box.deadSpaceMm > 0) {
-      const y0 = t + box.deadSpaceMm * s;
-      speaker.add(panel('divider', 0x8f6b45, -W / 2 + t, W / 2 - t, y0, y0 + t, zb, zf));
+      speaker.add(placedPanel('divider', 0x8f6b45, lay.floor!));
       const sand = new THREE.Mesh(new THREE.BoxGeometry(W - 2 * t - 0.004, box.deadSpaceMm * s - 0.004, -zf + zb - 0.004 < 0 ? zf - zb - 0.004 : 0.01), mat(0xd9c38f, 'divider', { transparent: true, opacity: 0.55 }));
       sand.position.set(0, t + (box.deadSpaceMm * s) / 2, (zb + zf) / 2);
       sand.userData.partId = 'divider';

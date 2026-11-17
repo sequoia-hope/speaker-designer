@@ -45,7 +45,7 @@ test('Home Hi-Fi: room planner, speaker designer and woodworking plan work on a 
   // Build tab: drawings, cut list, steps
   await page.getByRole('button', { name: /See the woodworking plan/ }).click();
   await expect(page.getByRole('heading', { name: 'Cut list' })).toBeVisible();
-  await expect(page.locator('.tbl').filter({ hasText: 'Top / bottom' })).toBeVisible();
+  await expect(page.locator('.tbl').filter({ hasText: 'Top / bottom' }).first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Front baffle' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Router circle-jig settings' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Stands' })).toBeVisible();

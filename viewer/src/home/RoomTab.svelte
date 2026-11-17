@@ -27,6 +27,11 @@
   import { home, saveHome, ROOM_PRESETS, livingPrinted, printedParams } from './homeState.svelte';
   import { HYBRID_PRESETS, PRINTED_DESIGNS, buildGeometry, simulate } from './hybrid';
   import { findDriver } from './drivers';
+  import MeasOverlayControl from './MeasOverlayControl.svelte';
+  import { compareToPrediction, pickOverlay } from './measOverlay';
+  import { eqDb, fitRoomEq, toApoText } from './roomEq';
+  import { smoothOctave, usablePoints } from './measurements';
+  import { downloadBlob } from './exporters';
   import {
     FT,
     type BoxAlignment,
@@ -398,12 +403,46 @@
     return out;
   });
 
+  // ---- a measured in-room response over the prediction, and room-mode EQ ----
+  /** the seat chart's level match: the band where both curves are mostly mains + sub, not the lowest mode */
+  const ROOM_ALIGN: [number, number] = [40, 200];
+  const measRoom = $derived(pickOverlay(home.measurements, home.measOverlay.room, 'spl'));
+  const roomCmp = $derived(
+    measRoom ? compareToPrediction(freqs.map((f, i) => ({ x: f, y: seat.resp[i] })), measRoom, { alignBand: ROOM_ALIGN, xMin: 18, xMax: 220, smooth: 24, edges: [40, 80, 150] }) : null
+  );
+  /** the EQ works from the measurement when one is overlaid (shifted onto the chart's scale), else the prediction */
+  const eq = $derived.by(() => {
+    if (!home.measOverlay.roomEq) return null;
+    if (measRoom && roomCmp) {
+      const pts = smoothOctave(usablePoints(measRoom), 24).filter((q) => q.f >= 15 && q.f <= 320);
+      if (pts.length >= 8) {
+        const r = fitRoomEq(pts.map((q) => q.f), pts.map((q) => q.mag + roomCmp.offsetDb), { fMin: 20, fMax: 300 });
+        return { r, from: 'measured' as const };
+      }
+    }
+    return { r: fitRoomEq(freqs, seat.resp, { fMin: 20, fMax: 220 }), from: 'predicted' as const };
+  });
+  function exportEq() {
+    if (!eq) return;
+    const head = `Room-mode EQ for ${home.roomName} — from the ${eq.from === 'measured' ? `measurement "${measRoom?.name}"` : 'predicted seat response'}, ${eq.r.fMin.toFixed(0)}–${eq.r.fMax.toFixed(0)} Hz\nCuts only (peaks); target = smoothed trend. Equalizer APO / REW filter text.`;
+    downloadBlob('room-eq.txt', toApoText(eq.r.filters, head), 'text/plain');
+  }
+
   // ---- chart ---------------------------------------------------------------
   const chartSeries = $derived.by((): MiniSeries[] => {
     const s: MiniSeries[] = [
       { label: `${speakerLabel} in this room, at your seat`, color: '#38bdf8', points: freqs.map((f, i) => ({ x: f, y: seat.resp[i] })), width: 2.4 },
       { label: 'Same speaker, no room (anechoic)', color: '#94a3b8', points: anechoic, dashed: true, width: 1.5 },
     ];
+    if (roomCmp && measRoom)
+      s.push({ label: `Measured: ${measRoom.name} (${roomCmp.offsetDb >= 0 ? '+' : '−'}${Math.abs(roomCmp.offsetDb).toFixed(1)} dB)`, color: '#f97316', points: roomCmp.points, dashed: true, width: 1.8 });
+    if (eq && eq.r.filters.length) {
+      const base = eq.from === 'measured' && roomCmp ? roomCmp.points : freqs.map((f, i) => ({ x: f, y: seat.resp[i] }));
+      s.push(
+        { label: `With the suggested EQ (${eq.from})`, color: '#34d399', points: base.map((q) => ({ x: q.x, y: q.y + eqDb(q.x, eq.r.filters) })), width: 1.8 },
+        { label: 'EQ target (smoothed trend)', color: '#e2e8f0', points: eq.r.freqs.map((f, i) => ({ x: f, y: eq.r.target[i] })), dashed: true, width: 1 }
+      );
+    }
     return s;
   });
 
@@ -1081,7 +1120,42 @@
       ...(pl.speakerFrontDistM > 0.2 ? [{ x: sbirNotchHz(pl.speakerFrontDistM), label: 'wall bounce', color: '#fb7185' }] : []),
       ...(sub.count ? [{ x: sub.crossoverHz, label: 'sub X-over', color: '#34d399' }] : []),
     ]}
+    xBand={roomCmp ? { x0: roomCmp.band[0], x1: roomCmp.band[1] } : null}
   />
+  <MeasOverlayControl
+    sel={home.measOverlay.room}
+    kind="spl"
+    cmp={roomCmp}
+    alignNote="an in-room measurement at the listening position (REW, mic at ear height); its absolute level is arbitrary, so only the shape compares"
+    showF3={false}
+    testid="room-overlay"
+  />
+  <div class="room-eq" data-testid="room-eq">
+    <label class="toggle"><input type="checkbox" bind:checked={home.measOverlay.roomEq} /> Suggest room-mode EQ</label>
+    {#if eq}
+      {#if eq.r.filters.length}
+        <p class="small muted">
+          {eq.r.filters.length} cut{eq.r.filters.length > 1 ? 's' : ''} fitted to the {eq.from === 'measured' ? `measurement (${measRoom?.name})` : 'predicted seat response'}, {eq.r.fMin.toFixed(0)}–{eq.r.fMax.toFixed(0)} Hz, towards its smoothed trend:
+          peaks above it {eq.r.before.aboveRmsDb.toFixed(1)} → <b>{eq.r.after.aboveRmsDb.toFixed(1)} dB RMS</b> (all deviation {eq.r.before.rmsDb.toFixed(1)} → {eq.r.after.rmsDb.toFixed(1)} dB).
+          {#if eq.from === 'predicted'}Measure the seat and overlay it above to fit the real room — the model's mode frequencies are only as good as the room's dimensions.{/if}
+        </p>
+        <table class="eq-tbl">
+          <thead><tr><th>#</th><th>Type</th><th>Freq</th><th>Gain</th><th>Q</th></tr></thead>
+          <tbody>
+            {#each eq.r.filters as f, i}
+              <tr><td>{i + 1}</td><td>PK</td><td>{f.fc.toFixed(1)} Hz</td><td>{f.gainDb.toFixed(1)} dB</td><td>{f.q.toFixed(2)}</td></tr>
+            {/each}
+          </tbody>
+        </table>
+        <div class="chips">
+          <button class="chip" onclick={exportEq} data-testid="room-eq-export">Export filters (Equalizer APO / REW .txt)</button>
+        </div>
+      {:else}
+        <p class="small muted">No peak stands more than 1.5 dB above the smoothed trend between {eq.r.fMin.toFixed(0)} and {eq.r.fMax.toFixed(0)} Hz — nothing to cut.</p>
+      {/if}
+      <p class="small muted">Cuts only: a peak is a resonance EQ can tame everywhere, but a dip is the room cancelling the sound at this seat — boosting it wastes amplifier power and cone travel and barely fills it.</p>
+    {/if}
+  </div>
   <p class="small muted">
     Below the purple line (~{fSch.toFixed(0)} Hz) the room's resonances dominate and seat position matters a
     lot; above it, the speaker's own design and early reflections matter more.
@@ -1185,6 +1259,21 @@
 </div>
 
 <style>
+  .eq-tbl {
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 4px 0 6px;
+  }
+  .eq-tbl th,
+  .eq-tbl td {
+    text-align: left;
+    padding: 2px 12px 2px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .eq-tbl th {
+    color: var(--text-2, #8b9dc3);
+    font-weight: 500;
+  }
   .toggle {
     display: flex;
     gap: 8px;

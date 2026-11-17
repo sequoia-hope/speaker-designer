@@ -12,6 +12,7 @@
 import type { BoxAlignment } from './roomAcoustics';
 import { SPEED_OF_SOUND, boxResponse, toDb } from './roomAcoustics';
 import type { DriverInfo } from './drivers';
+import { nestPanels, type NestPart } from './sheetLayout';
 
 export type BoxType = 'sealed' | 'vented';
 export type PortSide = 'front' | 'rear';
@@ -1196,60 +1197,24 @@ export interface SheetLayout {
   usedFraction: number;
 }
 
-export function nestSheets(panels: Panel[], quantity: number, mat: SheetMaterial, kerf = 3.5): SheetLayout[] {
-  const parts: { label: string; w: number; h: number }[] = [];
-  for (const p of panels.filter((p) => p.materialId === mat.id)) {
-    for (let i = 0; i < p.qtyPerBox * quantity; i++) {
-      // long dimension along the sheet's x (rip direction)
-      const a = Math.max(p.lengthMm, p.widthMm);
-      const b = Math.min(p.lengthMm, p.widthMm);
-      parts.push({ label: p.name, w: a, h: b });
-    }
-  }
-  parts.sort((p, q) => q.h - p.h || q.w - p.w);
+/** Sheets for the shopping list and parts tab: the same guillotine packer as the Build tab's sheet layout (sheetLayout.ts), no grain lock. */
+export function nestSheets(panels: Panel[], quantity: number, mat: SheetMaterial, kerf = 3.2): SheetLayout[] {
+  const mine = panels.filter((p) => p.materialId === mat.id && p.qtyPerBox * quantity > 0);
+  const parts: NestPart[] = mine.map((p) => {
+    // long dimension along the sheet's x (rip direction)
+    const a = Math.max(p.lengthMm, p.widthMm);
+    const b = Math.min(p.lengthMm, p.widthMm);
+    return { name: p.name, outline: [[0, 0], [a, 0], [a, b], [0, b]], qty: p.qtyPerBox * quantity, thickMm: p.thicknessMm, material: mat.name };
+  });
   const [SW, SH] = mat.sheetMm;
-  const margin = 10; // factory edges are often dinged — trim them
-  const sheets: SheetLayout[] = [];
-  const open = () => {
-    const s = { sheetMm: [SW, SH] as [number, number], parts: [] as PlacedPart[], usedFraction: 0, shelves: [] as { y: number; h: number; x: number }[] };
-    sheets.push(s);
-    return s;
-  };
-  type S = SheetLayout & { shelves: { y: number; h: number; x: number }[] };
-  for (const part of parts) {
-    let placed = false;
-    for (const s of sheets as S[]) {
-      // try existing shelves
-      for (const sh of s.shelves) {
-        if (part.h <= sh.h && sh.x + part.w <= SW - margin) {
-          s.parts.push({ label: part.label, x: sh.x, y: sh.y, w: part.w, h: part.h });
-          sh.x += part.w + kerf;
-          placed = true;
-          break;
-        }
-      }
-      if (placed) break;
-      const top = s.shelves.length ? s.shelves[s.shelves.length - 1].y + s.shelves[s.shelves.length - 1].h + kerf : margin;
-      if (top + part.h <= SH - margin && margin + part.w <= SW - margin) {
-        s.shelves.push({ y: top, h: part.h, x: margin + part.w + kerf });
-        s.parts.push({ label: part.label, x: margin, y: top, w: part.w, h: part.h });
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
-      const s = open() as S;
-      if (part.w > SW - 2 * margin || part.h > SH - 2 * margin) {
-        // part bigger than the sheet: place anyway so the UI can flag it
-      }
-      s.shelves.push({ y: margin, h: part.h, x: margin + part.w + kerf });
-      s.parts.push({ label: part.label, x: margin, y: margin, w: part.w, h: part.h });
-    }
-  }
-  for (const s of sheets) {
-    s.usedFraction = s.parts.reduce((a, p) => a + p.w * p.h, 0) / (SW * SH);
-    delete (s as Partial<S>).shelves;
-  }
+  const r = nestPanels(parts, { sheetW: SW, sheetH: SH, kerfMm: kerf, marginMm: 10 });
+  const sheets: SheetLayout[] = r.sheets.map((sh) => ({
+    sheetMm: [sh.w, sh.h] as [number, number],
+    parts: sh.placements.map((pl) => ({ label: pl.name, x: pl.x, y: pl.y, w: pl.w, h: pl.h })),
+    usedFraction: sh.utilisation,
+  }));
+  // a part bigger than the sheet: on a sheet of its own anyway, so the UI can flag it
+  for (const u of r.unplaced) sheets.push({ sheetMm: [SW, SH], parts: [{ label: u.name, x: 10, y: 10, w: u.w, h: u.h }], usedFraction: (u.w * u.h) / (SW * SH) });
   return sheets;
 }
 

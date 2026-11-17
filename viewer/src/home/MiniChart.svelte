@@ -26,6 +26,7 @@
     height = 200,
     band = null,
     shadeFrom = null,
+    xBand = null,
   }: {
     series: MiniSeries[];
     xMin: number;
@@ -40,6 +41,8 @@
     height?: number;
     band?: { y0: number; y1: number; color: string } | null;
     shadeFrom?: { x: number; label: string } | null;
+    /** a lightly shaded frequency span (e.g. the band a measurement's level is matched over) */
+    xBand?: { x0: number; x1: number; label?: string } | null;
   } = $props();
 
   const W = 360;
@@ -84,6 +87,12 @@
   {#if shadeFrom && shadeFrom.x < xMax}
     <rect x={sx(Math.max(shadeFrom.x, xMin))} y={padT} width={W - padR - sx(Math.max(shadeFrom.x, xMin))} height={height - padT - padB} fill="#64748b" opacity="0.16" />
     <text x={W - padR - 3} y={height - padB - 5} text-anchor="end" class="tick">{shadeFrom.label}</text>
+  {/if}
+  {#if xBand && xBand.x1 > xMin && xBand.x0 < xMax}
+    {@const a = sx(Math.max(xBand.x0, xMin))}
+    {@const b = sx(Math.min(xBand.x1, xMax))}
+    <rect x={a} y={padT} width={Math.max(0, b - a)} height={height - padT - padB} fill="#38bdf8" opacity="0.08" data-testid="x-band" />
+    {#if xBand.label}<text x={(a + b) / 2} y={height - padB - 5} text-anchor="middle" class="tick">{xBand.label}</text>{/if}
   {/if}
   {#each yTicks as y}
     <line x1={padL} x2={W - padR} y1={sy(y)} y2={sy(y)} class="grid" class:zero={y === 0} />
