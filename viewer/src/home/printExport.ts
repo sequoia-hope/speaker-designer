@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import pc from 'polygon-clipping';
 import type { Geometry, HeadGeometry, HybridParams, Printer, Pt, PrintPlan, RoundWaveguide, Strip } from './hybrid';
 import type { DriverInfo } from './drivers';
-import type { BuildPlan } from './speakerBuild';
+import { bindingPostOffsets, type BuildPlan } from './speakerBuild';
 import { meshesToStl, panelsToDxf, type DxfPanel } from './exporters';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { NestPart } from './sheetLayout';
@@ -613,10 +613,12 @@ function plywoodPanels(plan: BuildPlan): ThickPanel[] {
       const tx = W - tm.xMm;
       const ty = L - tm.yMm;
       if (tm.kind === 'cup') polyHoles.push([[tx - 37.5, ty - 37.5], [tx + 37.5, ty - 37.5], [tx + 37.5, ty + 37.5], [tx - 37.5, ty + 37.5]]);
-      else for (const dx of [-9.5, 9.5]) holes.push({ x: tx + dx, y: ty, r: 4.5 });
+      else for (const [dx, dy] of bindingPostOffsets(box)) holes.push({ x: tx - dx, y: ty - dy, r: 4.5 });
+      // opposed: the back woofer's through-hole (its rebate is a pocket: see the drawing)
+      for (const h of plan.backHoles) holes.push({ x: W - h.xMm, y: L - h.yMm, r: h.throughDiaMm / 2 });
       if (box.port) for (const rp of box.rearPorts) holes.push({ x: W - rp.xMm, y: L - rp.yMm, r: (box.port.diameterMm + 4) / 2 });
     }
-    const notes = [`${pn.thicknessMm} mm, ${pn.qtyPerBox} per speaker`, ...(isBaffle ? ['rebates: see the baffle drawing'] : [])];
+    const notes = [`${pn.thicknessMm} mm, ${pn.qtyPerBox} per speaker`, ...(isBaffle || (isBack && plan.backHoles.some((h) => h.rebateDiaMm)) ? [`rebates: see the ${isBack ? 'back-panel' : 'baffle'} drawing`] : [])];
     // where each copy goes (the same places the 3D view draws them)
     const t = pn.thicknessMm;
     const box3 = (b: Box3mm | null) => (b ? [boxPose({ outline, thickMm: t }, b)] : []);

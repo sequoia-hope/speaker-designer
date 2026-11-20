@@ -3,7 +3,7 @@
   import * as THREE from 'three';
   import pc from 'polygon-clipping';
   import { createViewer, sectionCaps, onTap, type Viewer } from './three3d';
-  import type { BuildPlan } from './speakerBuild';
+  import { bindingPostOffsets, type BuildPlan } from './speakerBuild';
   import { pointInPoly, type HeadGeometry, type PrintedModel, type Pt, type RoundWaveguide } from './hybrid';
   import type { DriverInfo } from './drivers';
   import { fmtInFrac } from './roomAcoustics';
@@ -87,7 +87,9 @@
       terminal:
         plan?.box.terminalMm.kind !== 'posts'
           ? { title: 'Terminal cup', size: '75 mm square cut-out', lines: ['Speaker-wire connection. Gasket it — it must be airtight.'] }
-          : { title: 'Binding posts', size: 'two holes, 19 mm apart', lines: ['No room for a terminal cup beside the port, so a pair of binding posts. Seal them with a dab of silicone.'] },
+          : plan?.box.arrangement === 'opposed'
+            ? { title: 'Binding posts — two pairs', size: 'four holes in a 19 mm square', lines: ['Top pair: front woofer. Bottom pair: back woofer. Separate pairs so each driver can have its own amplifier channel. Seal them with a dab of silicone.'] }
+            : { title: 'Binding posts', size: 'two holes, 19 mm apart', lines: ['No room for a terminal cup beside the port, so a pair of binding posts. Seal them with a dab of silicone.'] },
     };
     return misc[selected] ?? null;
   });
@@ -297,7 +299,7 @@
     speaker.add(shell);
     // pedestal: a printed ring cradle and a foot
     const ring = new THREE.Mesh(new THREE.CylinderGeometry(sg.Rmax * 0.32 * s, sg.Rmax * 0.4 * s, pedH * s, 48, 1, true), mat(PRINT, 'stand', { side: THREE.DoubleSide }));
-    ring.position.set(0, (pedH / 2) * s, -(sg.zFront * 0.45) * s);
+    ring.position.set(0, (pedH / 2) * s, -(sg.zFront * (sg.opposed ? 0.5 : 0.45)) * s);
     ring.userData.partId = 'stand';
     speaker.add(ring);
     if (showDrivers) {
@@ -305,6 +307,14 @@
       wg.position.set(0, cy, ex * 1.6);
       speaker.add(wg);
       addWoofer(wg, woofer, s, { rebateDepthMm: null });
+      if (sg.opposed) {
+        // opposed tube: the second woofer on the back end, facing backwards
+        const bg = new THREE.Group();
+        bg.position.set(0, cy, -sg.zFront * s - ex * 1.6);
+        bg.rotation.y = Math.PI;
+        speaker.add(bg);
+        addWoofer(bg, woofer, s, { rebateDepthMm: null });
+      }
       if (pm.head) speaker.add(headGroup(pm.head, -pm.head.setbackMm * s + ex * 0.4, sl.topY * s + ex * 0.5));
     }
     const grid = new THREE.GridHelper(Math.max(1.6, sg.Rmax * s * 6), 16, 0x2b3a5c, 0x1a2541);
@@ -713,14 +723,26 @@
     const termX = term.xMm * s - W / 2;
     const termY = H - term.yMm * s;
     const termHalf = 0.0375;
-    const postDx = [-0.0095, 0.0095];
-    {
+    // binding posts: (x, y) offsets in metres, y up (one pair, or two pairs for the opposed layout)
+    const postOff = bindingPostOffsets(box).map(([dx, dy]) => [dx * s, -dy * s] as [number, number]);
+    // opposed: the back panel is a second baffle, layered so its rebate has its true depth
+    const backDrv = plan.backHoles;
+    const backReb = Math.max(0, ...backDrv.map((h) => (h.rebateDiaMm && h.rebateDepthMm ? h.rebateDepthMm * s : 0)));
+    const backLayers: [number, number][] = backReb > 0 && backReb < t ? [[0, backReb], [backReb, t]] : [[0, t]];
+    for (const [la, lb] of backLayers) {
       const shape = new THREE.Shape();
       shape.moveTo(-W / 2, 0);
       shape.lineTo(W / 2, 0);
       shape.lineTo(W / 2, H);
       shape.lineTo(-W / 2, H);
       shape.lineTo(-W / 2, 0);
+      for (const h of backDrv) {
+        const outerLayer = la < backReb - 1e-9;
+        const r = ((outerLayer && h.rebateDiaMm ? h.rebateDiaMm : h.throughDiaMm) * s) / 2;
+        const p = new THREE.Path();
+        p.absarc(h.xMm * s - W / 2, H - h.yMm * s, r, 0, Math.PI * 2, true);
+        shape.holes.push(p);
+      }
       if (term.kind === 'cup') {
         const cup = new THREE.Path();
         cup.moveTo(termX - termHalf, termY - termHalf);
@@ -730,9 +752,9 @@
         cup.lineTo(termX - termHalf, termY - termHalf);
         shape.holes.push(cup);
       } else {
-        for (const dx of postDx) {
+        for (const [dx, dy] of postOff) {
           const ph = new THREE.Path();
-          ph.absarc(termX + dx, termY, 0.0045, 0, Math.PI * 2, true);
+          ph.absarc(termX + dx, termY + dy, 0.0045, 0, Math.PI * 2, true);
           shape.holes.push(ph);
         }
       }
@@ -742,9 +764,9 @@
           ph.absarc(p.x, p.y, ((rearPort.diameterMm + 4) * s) / 2, 0, Math.PI * 2, true);
           shape.holes.push(ph);
         }
-      const g = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: false, curveSegments: 48 });
+      const g = new THREE.ExtrudeGeometry(shape, { depth: lb - la, bevelEnabled: false, curveSegments: 48 });
       const m = withEdges(new THREE.Mesh(g, mat(color2, 'back')));
-      m.position.z = -D - ex;
+      m.position.z = -D - ex + la;
       m.userData.partId = 'back';
       speaker.add(m);
     }
@@ -799,19 +821,19 @@
       termCup.position.set(termX, termY, zBack + cupDepth / 2);
       termParts.push(termFlange, termCup);
     }
-    for (const [i, dx] of postDx.entries()) {
-      const red = i === 0;
+    for (const [i, [dx, dy]] of postOff.entries()) {
+      const red = i % 2 === 0;
       const color = red ? 0xdc2626 : 0x111111;
       // cup: posts stand on the flange; posts-only: a threaded shank through the panel too
       const len = term.kind === 'cup' ? 0.02 : 0.02 + t + 0.006;
       const post = new THREE.Mesh(new THREE.CylinderGeometry(term.kind === 'cup' ? 0.005 : 0.004, term.kind === 'cup' ? 0.005 : 0.004, len, 16), mat(color, 'terminal'));
       post.rotation.x = Math.PI / 2;
-      post.position.set(termX + dx * (term.kind === 'cup' ? 1.6 : 1), termY, term.kind === 'cup' ? zBack - flangeT - 0.01 : zBack - 0.02 + len / 2);
+      post.position.set(termX + dx * (term.kind === 'cup' ? 1.6 : 1), termY + dy, term.kind === 'cup' ? zBack - flangeT - 0.01 : zBack - 0.02 + len / 2);
       termParts.push(post);
       if (term.kind === 'posts') {
         const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.012, 20), mat(color, 'terminal', { roughness: 0.4 }));
         knob.rotation.x = Math.PI / 2;
-        knob.position.set(termX + dx, termY, zBack - 0.008);
+        knob.position.set(termX + dx, termY + dy, zBack - 0.008);
         termParts.push(knob);
       }
     }
@@ -831,6 +853,14 @@
         if (h.kind === 'woofer') addWoofer(g, woofer, s, h);
         else if (h.kind === 'tweeter' && tweeter) addTweeter(g, tweeter, s, h);
         else if (h.kind === 'port' && plan.box.port) addPort(g, plan.box.port.diameterMm * s, plan.box.port.lengthMm * s);
+      }
+      // opposed: the back woofer, turned to face backwards, its flange in the back panel's rebate
+      for (const h of backDrv) {
+        const g = new THREE.Group();
+        g.position.set(h.xMm * s - W / 2, H - h.yMm * s, -D - ex * 1.9);
+        g.rotation.y = Math.PI;
+        speaker.add(g);
+        addWoofer(g, woofer, s, h);
       }
       if (rearPort)
         for (const p of rearPortXY) {

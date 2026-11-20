@@ -1,6 +1,6 @@
 import { DRIVERS, findDriver, type DriverInfo } from './drivers';
 import type { DesignSettings } from './designs';
-import { makePlan, type BuildPlan } from './speakerBuild';
+import { isSingleDriver, isSubArrangement, makePlan, type BuildPlan } from './speakerBuild';
 
 export interface PlannedDesign {
   plan: BuildPlan;
@@ -12,8 +12,8 @@ export interface PlannedDesign {
 export function planFor(s: DesignSettings, earHeightMm: number): PlannedDesign {
   const woofer =
     findDriver(s.wooferId) ??
-    DRIVERS.find((d) => d.role === (s.arrangement === 'sub' ? 'sub' : 'woofer'))!;
-  const tweeter = s.arrangement === 'sub' || s.arrangement === 'fr' ? null : (findDriver(s.tweeterId) ?? null);
+    DRIVERS.find((d) => d.role === (isSubArrangement(s.arrangement) ? 'sub' : 'woofer'))!;
+  const tweeter = isSingleDriver(s.arrangement) ? null : (findDriver(s.tweeterId) ?? null);
   const plan = makePlan({
     arrangement: s.arrangement,
     driverWoofer: woofer,

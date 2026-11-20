@@ -6,12 +6,13 @@ import { DESIGNS } from '../src/home/designs';
 import { planFor } from '../src/home/planning';
 import { PRINTED_DESIGNS, HYBRID_PRESETS, DEFAULT_PRINTER, buildGeometry, buildIssues, planPrint, roundWaveguide, waveguideIssues, isAir, pointInPoly } from '../src/home/hybrid';
 import { DRIVERS, findDriver } from '../src/home/drivers';
+import { isSubArrangement } from '../src/home/speakerBuild';
 
 test('every planner design is physically buildable', () => {
   const failures: string[] = [];
   let n = 0;
   for (const d of DESIGNS) {
-    const isSub = d.settings.arrangement === 'sub';
+    const isSub = isSubArrangement(d.settings.arrangement);
     const woofers = DRIVERS.filter((x) => x.role === (isSub ? 'sub' : 'woofer'));
     for (const w of woofers)
       for (const boxType of ['sealed', 'vented'] as const)
@@ -47,7 +48,7 @@ test('every printed design fits: woofer space clear, walls intact, dividers cut 
     expect(g.fits, `${id}: ${g.warnings.join(' | ')}`).toBe(true);
     const bad = buildIssues(p, g, d, planPrint(g, DEFAULT_PRINTER), DEFAULT_PRINTER, id === 'sub').filter((i) => i.level === 'bad');
     expect(bad.map((i) => i.title), id).toEqual([]);
-    if (p.type !== 'waveguide' && p.type !== 'shell') expect(g.dividerCuts.length, `${id} divider cut-outs`).toBeGreaterThan(0);
+    if (p.type !== 'waveguide' && p.type !== 'shell' && p.type !== 'tube') expect(g.dividerCuts.length, `${id} divider cut-outs`).toBeGreaterThan(0);
   }
 });
 
@@ -122,4 +123,59 @@ test('printed designs: anything self-intersecting or with a driver off the front
               for (const [y, r] of mounts) for (let dy = -r; dy <= r; dy += 2) expect(solid(y + dy), `${pd.id}: front face under the driver at ${Math.round(y + dy)} mm`).toBe(true);
             }
   expect(checked).toBeGreaterThan(50);
+});
+
+test('opposed sub: drivers front and back on one axis, magnets clear, two pairs of posts, sealed', () => {
+  for (const id of ['sub8-opposed', 'sub65-opposed']) {
+    const d = DESIGNS.find((x) => x.id === id)!;
+    for (const w of DRIVERS.filter((x) => x.role === 'sub'))
+      for (const targetQtc of [0.5, 0.707, 1.0]) {
+        const { plan } = planFor({ ...d.settings, wooferId: w.id, targetQtc, boxType: 'vented' }, 1000);
+        const tag = `${id} ${w.model} Qtc ${targetQtc}`;
+        expect(plan.box.alignment.kind, tag).toBe('sealed');
+        expect(plan.box.port, tag).toBeNull();
+        expect(plan.box.wooferCount, tag).toBe(2);
+        expect(plan.box.fitIssues, tag).toEqual([]);
+        const front = plan.holes.filter((h) => h.kind === 'woofer');
+        expect(front, tag).toHaveLength(1);
+        expect(plan.backHoles, tag).toHaveLength(1);
+        expect(plan.backHoles[0].xMm).toBeCloseTo(front[0].xMm, 6);
+        expect(plan.backHoles[0].yMm).toBeCloseTo(front[0].yMm, 6);
+        // inside depth holds both mounting depths and the magnet gap
+        expect(plan.box.internalMm.d, tag).toBeGreaterThanOrEqual(2 * (w.mountDepthMm ?? 80) + 20 - 1);
+        expect(plan.box.terminalMm.kind, tag).toBe('posts');
+        // the reported air volume is what the box really holds (not less)
+        const grossL = (plan.box.internalMm.w * plan.box.internalMm.h * plan.box.internalMm.d) / 1e6;
+        expect(plan.box.netVolumeL, tag).toBeLessThan(grossL);
+        expect(plan.box.netVolumeL, tag).toBeGreaterThan(grossL / 1.04 - 2 * (w.displacementL ?? 0.6) - 1.5);
+        expect(plan.shopping.find((s) => /Subwoofer driver/.test(s.item))?.qty, tag).toMatch(/^4 /);
+      }
+  }
+});
+
+test('printed opposed tube: whole rings on the bed, both woofers fit with the magnet gap, two woofers in the sim', () => {
+  const p = PRINTED_DESIGNS.find((x) => x.id === 'tube-sub')!.params;
+  const d = findDriver(p.driverId)!;
+  const g = buildGeometry(p, d);
+  expect(g.fits, g.warnings.join(' | ')).toBe(true);
+  const sh = g.shell!;
+  expect(sh.opposed).toBeTruthy();
+  // both ends carry a land at least as wide as the frame, with the woofer hole
+  expect(2 * sh.landR).toBeGreaterThanOrEqual(d.frameDiaMm);
+  expect(sh.section.filter(([r, z]) => r === sh.holeR && (z === 0 || z === sh.zFront))).toHaveLength(2);
+  expect(sh.opposed!.innerLenMm).toBeGreaterThanOrEqual(2 * (d.mountDepthMm ?? 80) + 20);
+  // every band prints as a whole ring on the default bed (no half-ring seams)
+  const plan = planPrint(g, DEFAULT_PRINTER);
+  expect(plan.segments.every((s) => s.core === 0)).toBe(true);
+  expect(buildIssues(p, g, d, plan, DEFAULT_PRINTER, false).filter((i) => i.level === 'bad')).toEqual([]);
+  // the shared volume with both woofers: Qtc from 2 × Vas
+  const qtc = d.qts * Math.sqrt(1 + (2 * d.vasL) / sh.netL);
+  expect(qtc).toBeGreaterThan(0.6);
+  expect(qtc).toBeLessThan(0.8);
+  // too short for two magnets back to back → flagged, not drawn
+  const short = buildGeometry({ ...p, depthMm: 2 * (d.mountDepthMm ?? 80) }, d);
+  expect(short.fits).toBe(false);
+  expect(short.warnings.join(' ')).toMatch(/two woofers need/);
+  // too narrow for the frame → flagged
+  expect(buildGeometry({ ...p, heightMm: d.frameDiaMm - 10 }, d).fits).toBe(false);
 });

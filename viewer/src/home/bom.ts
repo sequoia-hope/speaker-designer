@@ -6,7 +6,7 @@ import { PARTS, KITS, type Kit } from './catalog';
 import { designById, type DesignSettings, type Role } from './designs';
 import type { DriverInfo } from './drivers';
 import { planFor, type PlannedDesign } from './planning';
-import { MATERIALS, nestSheets, type Panel, type SheetLayout } from './speakerBuild';
+import { isSubArrangement, MATERIALS, nestSheets, type Panel, type SheetLayout } from './speakerBuild';
 import type { LayoutId, SystemSpeaker } from './system';
 
 export interface BomLine {
@@ -94,8 +94,10 @@ export function systemBom(
   }
 
   // ---- cabinet hardware ----
-  const nonSubUnits = list.filter((u) => u.planned.plan.box.arrangement !== 'sub').reduce((a, u) => a + u.units, 0);
+  const nonSubUnits = list.filter((u) => !isSubArrangement(u.planned.plan.box.arrangement)).reduce((a, u) => a + u.units, 0);
   const subUnits = list.filter((u) => u.planned.plan.box.arrangement === 'sub').reduce((a, u) => a + u.units, 0);
+  // opposed subs run on the user's own amplifier (planned separately): binding posts only, no plate amp
+  const opposedUnits = list.filter((u) => u.planned.plan.box.arrangement === 'opposed').reduce((a, u) => a + u.units, 0);
   const driverCount = list.reduce((a, u) => a + u.units * (u.planned.plan.box.wooferCount + (u.planned.tweeter ? 1 : 0)), 0);
   const screws = list.reduce(
     (a, u) => a + u.units * ((u.planned.woofer.mountingHoles ?? 4) * u.planned.plan.box.wooferCount + (u.planned.tweeter?.mountingHoles ?? 0)),
@@ -103,6 +105,8 @@ export function systemBom(
   );
   if (nonSubUnits) lines.push(P('termCup', nonSubUnits, 'Cabinet hardware'));
   if (subUnits) lines.push(P('plateAmp', subUnits, 'Cabinet hardware', 'Powers each sub; DSP gives crossover, level, delay and room EQ. Back-panel cut-out 9¼″ × 6¼″.'));
+  if (opposedUnits)
+    lines.push({ group: 'Cabinet hardware', item: 'Binding posts, two pairs per opposed sub (one per driver)', qty: opposedUnits * 2, unit: 6, vendor: 'Parts Express', note: 'Rough price per pair. The amplifier is your own design, planned separately.' });
   lines.push(P('gasket', Math.max(1, Math.ceil(driverCount / 14)), 'Cabinet hardware'));
   lines.push(P('tnuts', Math.max(1, Math.ceil(screws / 50)), 'Cabinet hardware', `${screws} driver screws in total; #10-32 machine screws to match.`));
   const sealedL = list.filter((u) => u.planned.plan.box.alignment.kind === 'sealed').reduce((a, u) => a + u.units * u.planned.plan.box.netVolumeL, 0);
@@ -115,7 +119,7 @@ export function systemBom(
       lines.push(P(port.diameterMm <= 55 ? 'port2' : 'port3', u.units * port.count, 'Cabinet hardware', `${u.name}: cut to ${port.lengthMm.toFixed(0)} mm.`));
     }
   }
-  const floorUnits = list.filter((u) => ['sub', 'tower'].includes(u.planned.plan.box.arrangement)).reduce((a, u) => a + u.units, 0);
+  const floorUnits = list.filter((u) => ['sub', 'opposed', 'tower'].includes(u.planned.plan.box.arrangement)).reduce((a, u) => a + u.units, 0);
   if (floorUnits) lines.push(P('feet', floorUnits, 'Cabinet hardware', 'Under subs and towers.'));
 
   // ---- wood: nest every panel of every speaker together ----
@@ -148,7 +152,7 @@ export function systemBom(
     electronicsNote =
       'Active route: a DSP splits the signal into woofer and tweeter channels, each with its own amplifier channel. No passive crossover to design — crossover, delay, baffle-step and room EQ are software settings tuned with the measurement mic. The DSP-408 also has spare outputs for the party fills (with their delay).';
     lines.push(P('dsp408', 1, 'Electronics'));
-    const ampChannels = list.filter((u) => u.planned.plan.box.arrangement !== 'sub').reduce((a, u) => a + u.units * (u.planned.tweeter ? 2 : 1), 0);
+    const ampChannels = list.filter((u) => !isSubArrangement(u.planned.plan.box.arrangement)).reduce((a, u) => a + u.units * (u.planned.tweeter ? 2 : 1), 0);
     lines.push(P('apa150', Math.ceil(ampChannels / 2), 'Electronics', `${ampChannels} amplifier channels needed (woofer + tweeter per speaker); each APA150 gives 2.`));
   } else {
     electronicsNote =

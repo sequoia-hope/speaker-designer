@@ -15,7 +15,7 @@
   import { home, saveHome } from './homeState.svelte';
   import { allDrivers, type DriverInfo } from './drivers';
   import { DESIGNS, designById, type Role } from './designs';
-  import { MATERIALS, type BuildPlan } from './speakerBuild';
+  import { isSubArrangement, MATERIALS, OPPOSED_MAGNET_GAP_MM, type BuildPlan } from './speakerBuild';
   import { SPEED_OF_SOUND, fmtInFrac } from './roomAcoustics';
 
   let { plan, woofer, tweeter, onGoBuild, onOpenPrint }: {
@@ -35,7 +35,7 @@
   const preset = $derived(designById(home.activeDesign));
   const box = $derived(plan.box);
   let onStand = $state(false);
-  const isSub = $derived(cur.arrangement === 'sub');
+  const isSub = $derived(isSubArrangement(cur.arrangement));
   const woofers = $derived(allDrivers().filter((d) => (isSub ? d.role === 'sub' || (!!d.custom && d.role === 'pa') : d.role === 'woofer')));
   const tweeters = $derived(allDrivers().filter((d) => d.role === 'tweeter'));
   // your own drivers: add / edit / delete
@@ -322,10 +322,13 @@
   <h2>Box</h2>
   <div class="chips">
     <button class="chip" class:on={cur.boxType === 'sealed'} onclick={() => (cur.boxType = 'sealed')}>Sealed</button>
-    <button class="chip" class:on={cur.boxType === 'vented'} onclick={() => (cur.boxType = 'vented')}>Vented (ported)</button>
+    {#if cur.arrangement !== 'opposed'}<button class="chip" class:on={cur.boxType === 'vented'} onclick={() => (cur.boxType = 'vented')}>Vented (ported)</button>{/if}
   </div>
   <p class="small muted">
-    {#if cur.boxType === 'sealed'}
+    {#if cur.arrangement === 'opposed'}
+      Opposed-driver sub: always sealed. One driver in the front, one in the back, both magnets inside — their pushes on the cabinet cancel.
+      The box can't be smaller than the two drivers' mounting depths back to back, plus a {OPPOSED_MAGNET_GAP_MM} mm gap.
+    {:else if cur.boxType === 'sealed'}
       Sealed: smaller, simpler (no port to get wrong), tight bass that rolls off gently. Pairs naturally with a
       subwoofer and is forgiving of placement near walls. <b>Recommended for a first build.</b>
     {:else}
@@ -334,7 +337,7 @@
       than rear ports.
     {/if}
   </p>
-  {#if cur.boxType === 'sealed'}
+  {#if cur.boxType === 'sealed' || cur.arrangement === 'opposed'}
     <div class="chips">
       <span class="small muted" style="align-self:center">Stuffing:</span>
       {#each [[0, 'None'], [0.5, 'Light'], [1, 'Full']] as [v, lbl]}
@@ -390,10 +393,12 @@
     {/each}
   </div>
   <p class="small muted">{plan.material.notes}</p>
+  {#if cur.arrangement !== 'opposed'}
   <label class="toggle">
     <input type="checkbox" bind:checked={cur.doubleBaffle} />
     Double-thickness front baffle <span class="muted small">(stiffer, deeper driver rebates; +1 sheet layer)</span>
   </label>
+  {/if}
 </section>
 
 <section class="card">

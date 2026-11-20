@@ -14,7 +14,7 @@
   import MeasOverlayControl from './MeasOverlayControl.svelte';
   import { compareToPrediction, impedanceOverlay, pickOverlay } from './measOverlay';
   import { printedAsModel, runModel } from './boxModel';
-  import { autoFitAsync, MOUTH_NOISE_MS, buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, type FitChange, type HybridParams, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
+  import { autoFitAsync, isRoundType, MOUTH_NOISE_MS, buildGeometry, buildIssues, DEFAULT_SANDWICH, HYBRID_PRESETS, headGeometry, type FitChange, type HybridParams, roundWaveguide, tweeterSetup, waveguideIssues, type TweeterMount, planPanels, planPrint, plateProps, plateThickness, printedDesignById, sandwichPlate, simulate, SKINS, WOOD_CORES, type HeadKind, type PlateMaterial, type PrintedModel, type ProfileType, type SandwichCore } from './hybrid';
   import { cabinetDims, driverFor } from './hybridModels';
 
   // One printed design ('sub' or a PRINTED_DESIGNS id), shown either as a design
@@ -84,12 +84,12 @@
 
   const drivers = $derived(
     allDrivers().filter((x) =>
-      isSub || p.type === 'tapped' ? x.role === 'pa' || x.role === 'sub' : x.role === 'woofer' || (p.type === 'waveguide' && x.role === 'tweeter')
+      isSub || p.type === 'tapped' || p.type === 'tube' ? x.role === 'pa' || x.role === 'sub' : x.role === 'woofer' || (p.type === 'waveguide' && x.role === 'tweeter')
     )
   );
   function setType(t: ProfileType) {
     // start the new profile from the catalogue design of that type (keeps the tweeter head)
-    const like = { sealed: 'mon-sealed', 'slot-port': 'mon-slot', tl: 'mon-tl', blh: 'blh', tapped: 'th-sub', shell: 'egg' }[t as string];
+    const like = { sealed: 'mon-sealed', 'slot-port': 'mon-slot', tl: 'mon-tl', blh: 'blh', tapped: 'th-sub', shell: 'egg', tube: 'tube-sub' }[t as string];
     const base = t === 'waveguide' ? HYBRID_PRESETS.waveguide : (printedDesignById(like ?? 'line')?.params ?? HYBRID_PRESETS.living);
     const keep = tweeterSetup(p);
     home.hybrid.designs[id] = {
@@ -219,7 +219,7 @@
     <section class="card vis-card">
       <div class="vis-hd"><h2>{title}</h2></div>
       <div class="dimline">
-        {mm(dims.w)} W × {mm(dims.h)} H × {mm(dims.d)} D ({inch(dims.w)} × {inch(dims.h)} × {inch(dims.d)}){head ? ` + ${head.h} mm tweeter pod` : ''} · {geo.cores > 1 ? `${geo.cores} printed cores of ${geo.coreMm.toFixed(0)} mm with ${geo.cores - 1} divider${geo.cores > 2 ? 's' : ''}` : `core ${geo.coreMm.toFixed(0)} mm thick`} between two {p.plateMm} mm plates
+        {mm(dims.w)} W × {mm(dims.h)} H × {mm(dims.d)} D ({inch(dims.w)} × {inch(dims.h)} × {inch(dims.d)}){head ? ` + ${head.h} mm tweeter pod` : ''} · {#if geo.shell}{geo.shell.opposed ? `printed tube, ${p.wallMm} mm wall, a woofer on each end` : `printed shell, ${p.wallMm} mm wall`}{:else}{geo.cores > 1 ? `${geo.cores} printed cores of ${geo.coreMm.toFixed(0)} mm with ${geo.cores - 1} divider${geo.cores > 2 ? 's' : ''}` : `core ${geo.coreMm.toFixed(0)} mm thick`} between two {p.plateMm} mm plates{/if}
       </div>
       {#if fitting !== null}
         <div class="fitnote" role="status">Finding the smallest change that makes it buildable…</div>
@@ -250,7 +250,7 @@
       <p class="sub">{entry?.blurb ?? 'A 3D-printed core carries the complicated inside (horn folds, line, port, waveguide); two flat plywood plates close it off.'} Big flat surfaces are wood, complex shapes are plastic.</p>
       {#if !isSub}
         <div class="chips" style="margin-top:8px">
-          {#each [['sealed', 'Sealed'], ['slot-port', 'Folded slot port'], ['tl', 'Transmission line'], ['blh', 'Back-loaded horn'], ['tapped', 'Tapped horn'], ['shell', 'Curved shell'], ['waveguide', 'Waveguide only']] as [t, lbl]}
+          {#each [['sealed', 'Sealed'], ['slot-port', 'Folded slot port'], ['tl', 'Transmission line'], ['blh', 'Back-loaded horn'], ['tapped', 'Tapped horn'], ['shell', 'Curved shell'], ['tube', 'Opposed tube (sub)'], ['waveguide', 'Waveguide only']] as [t, lbl]}
             <button class="chip" class:on={p.type === t} onclick={() => setType(t as ProfileType)}>{lbl}</button>
           {/each}
         </div>
@@ -261,10 +261,10 @@
           {#each drivers as dr}<option value={dr.id}>{dr.brand} {dr.model} ({dr.sizeLabel}){dr.priceUsd ? ` — $${dr.priceUsd.toFixed(0)}` : ''}</option>{/each}
         </select>
       </label>
-      {#if !isSub && p.type !== 'waveguide' && p.type !== 'tapped'}
+      {#if !isSub && p.type !== 'waveguide' && p.type !== 'tapped' && p.type !== 'tube'}
         <h3>Tweeter</h3>
         <div class="chips">
-          {#each [['front', 'In the cabinet'], ['pod', 'Separate pod on top'], ['none', 'None (woofer only)']].filter(([k]) => p.type !== 'shell' || k !== 'front') as [k, lbl]}
+          {#each [['front', 'In the cabinet'], ['pod', 'Separate pod on top'], ['none', 'None (woofer only)']].filter(([k]) => !isRoundType(p.type) || k !== 'front') as [k, lbl]}
             <button class="chip" class:on={tw.mount === k} onclick={() => { p.tweeterMount = k as TweeterMount; p.head = undefined; if (k !== 'none' && !p.tweeterId) p.tweeterId = tweeters[0]?.id; }}>{lbl}</button>
           {/each}
         </div>
@@ -386,14 +386,14 @@
     {/if}
     <section class="card">
       <h2>Size & profile</h2>
-      {#each (p.type === 'shell' ? [['heightMm', 'Diameter', 150, 600, 10], ['depthMm', 'Length (back to front)', 150, 800, 10]] : [['heightMm', 'Height', 200, 1400, 10], ['depthMm', 'Depth (profile width)', 120, 1400, 10], ['extrusionMm', 'Width between the outer plates', 60, 900, 5]]) as [k, lbl, mn, mx, st]}
+      {#each (isRoundType(p.type) ? [['heightMm', 'Diameter', 150, 600, p.type === 'tube' ? 2 : 10], ['depthMm', p.type === 'tube' ? 'Length (end to end)' : 'Length (back to front)', 150, 900, 10]] : [['heightMm', 'Height', 200, 1400, 10], ['depthMm', 'Depth (profile width)', 120, 1400, 10], ['extrusionMm', 'Width between the outer plates', 60, 900, 5]]) as [k, lbl, mn, mx, st]}
         {@const key = k as 'heightMm' | 'depthMm' | 'extrusionMm'}
         <div class="field">
           <label for={`h-${key}`}>{lbl}</label><span class="val">{p[key]} mm</span>
           <input id={`h-${key}`} type="range" min={mn} max={mx} step={st} bind:value={p[key]} />
         </div>
       {/each}
-      {#if p.type !== 'waveguide' && p.type !== 'sealed' && p.type !== 'shell'}
+      {#if p.type !== 'waveguide' && p.type !== 'sealed' && !isRoundType(p.type)}
         <div class="seg" style="margin:6px 0">
           <button class:on={p.construction === 'full'} onclick={() => (p.construction = 'full')}>Fully printed core</button>
           <button class:on={p.construction === 'bends'} onclick={() => { p.construction = 'bends'; if (![12, 18, 19].includes(p.wallMm)) p.wallMm = 18; }}>Printed bends + plywood walls</button>
@@ -419,7 +419,7 @@
         <input id="h-wall" type="range" min={lw * 3} max={lw * 16} step={lw} value={p.wallMm} oninput={(e) => (p.wallMm = Math.round(+(e.target as HTMLInputElement).value / lw) * lw)} />
       </div>
       {/if}
-      {#if p.type !== 'shell'}
+      {#if !isRoundType(p.type)}
       <div class="field">
         <label for="h-div">Plywood dividers inside the core</label>
         <span class="val">{p.dividers} → {geo.cores} printed core{geo.cores > 1 ? 's' : ''} of {geo.coreMm.toFixed(0)} mm</span>
@@ -487,7 +487,7 @@
         </div>
       {/if}
       {/if}
-      {#if p.type !== 'waveguide' && p.type !== 'sealed' && p.type !== 'shell'}
+      {#if p.type !== 'waveguide' && p.type !== 'sealed' && !isRoundType(p.type)}
         <div class="field">
           <label for="h-legs">{p.type === 'slot-port' ? 'Port folds' : 'Legs (folds + 1)'}</label><span class="val">{p.legs}</span>
           <input id="h-legs" type="range" min="1" max="8" step="1" bind:value={p.legs} />

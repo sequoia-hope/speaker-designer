@@ -19,7 +19,7 @@
 
 import { SPEED_OF_SOUND } from './roomAcoustics';
 import { findDriver, type DriverInfo } from './drivers';
-import { shellBands, shellGeometry, shellVolumeCm3, type ShellGeometry } from './shell';
+import { shellBands, shellGeometry, shellVolumeCm3, tubeGeometry, TUBE_MAGNET_GAP_MM, type ShellGeometry } from './shell';
 import { baffleResponse } from './diffraction';
 import { abs as cabs, arg as carg, quarterWaveHz, solveLine, trapTuningHz, type Stuffing, type Trap } from './lineNetwork';
 
@@ -77,7 +77,9 @@ export function zRad(areaM2: number, f: number): Cx {
 // ---------------------------------------------------------------------------
 // parameters
 // ---------------------------------------------------------------------------
-export type ProfileType = 'folded-horn' | 'tl' | 'slot-port' | 'waveguide' | 'sealed' | 'blh' | 'tapped' | 'shell';
+export type ProfileType = 'folded-horn' | 'tl' | 'slot-port' | 'waveguide' | 'sealed' | 'blh' | 'tapped' | 'shell' | 'tube';
+/** round printed cabinets: a solid of revolution about the woofer axis (one woofer, or an opposed pair in a tube) */
+export const isRoundType = (t: ProfileType) => t === 'shell' || t === 'tube';
 /** printed tweeter head on top of a living-room cabinet */
 export type HeadKind = 'none' | 'flat' | 'waveguide';
 export type TweeterMount = 'none' | 'front' | 'pod';
@@ -958,6 +960,65 @@ function buildGeometryRaw(p: HybridParams, d: DriverInfo): Geometry {
       fits,
       warnings,
     };
+  }
+
+  if (p.type === 'tube') {
+    // opposed tube: heightMm = outside diameter, depthMm = length along the axis; a woofer
+    // on each end, both magnets inside (the printed form of the plywood opposed cube)
+    const sg = tubeGeometry({ diaMm: H, lengthMm: W, wallMm: t, rounding: k }, d);
+    for (const pr of sg.problems) {
+      fits = false;
+      warnings.push(pr);
+    }
+    const cy = H / 2;
+    const R = sg.Rmax;
+    const ri = R - t;
+    const te = sg.opposed!.endMm;
+    const iFront = sg.section.findIndex(([r, z]) => r === sg.holeR && z === sg.zFront);
+    const outerPts = sg.section.slice(0, iFront + 1);
+    const core: Pt[] = [...outerPts.map(([r, z]) => [z, cy + r] as Pt), ...[...outerPts].reverse().map(([r, z]) => [z, cy - r] as Pt)];
+    holes.push([[te, cy - ri], [sg.zFront - te, cy - ri], [sg.zFront - te, cy + ri], [te, cy + ri]]);
+    chambers.push({ label: 'Box (net)', volumeL: sg.netL });
+    if (sg.netL > 0) {
+      // two woofers sharing one sealed volume act like one with twice the Vas and cone area
+      const alpha = (2 * d.vasL) / sg.netL;
+      const qtc = d.qts * Math.sqrt(1 + alpha);
+      const md = d.mountDepthMm ?? 80;
+      stats.push(
+        { label: 'Net volume', value: `${sg.netL.toFixed(1)} L (two woofers' magnets take ${d.displacementL ? (2 * d.displacementL).toFixed(1) : '≈ 1.2'} L)` },
+        { label: 'Qtc / fc (both woofers)', value: `${qtc.toFixed(2)} / ${(d.fsHz * Math.sqrt(1 + alpha)).toFixed(0)} Hz${qtc > 0.85 ? ' — peaky: a longer or wider tube, or EQ' : qtc < 0.55 ? ' — lean: a shorter tube, or EQ' : ''}` },
+        { label: 'Magnet gap', value: `${Math.round(sg.opposed!.innerLenMm - 2 * md)} mm between the two magnets (≥ ${TUBE_MAGNET_GAP_MM} mm)` },
+        { label: 'Why a tube', value: 'box pressure pulls a cylinder\'s wall evenly round (hoop tension) instead of bending flat panels, so a thin printed wall stays stiff; it prints as plain rings, and the two woofers line up on its axis by construction' }
+      );
+    }
+    labels.push({ x: W / 2, y: cy, text: 'opposed sealed tube' });
+    const geo: Geometry = {
+      ...base,
+      E: H,
+      Etot: H,
+      cores: 1,
+      coreMm: H,
+      construction: 'full',
+      caps: [],
+      strips: [],
+      dead: [],
+      core: dedupe(core),
+      holes,
+      spans: [],
+      labels,
+      driver: { x: W - te / 2, y: cy, dia, face: 'front' },
+      path: { s: [0], area: [0] },
+      mouthRect: null,
+      dividerCuts: [],
+      tweeter: null,
+      shell: sg,
+      chambers,
+      stats,
+      fits,
+      warnings,
+    };
+    geo.W = sg.zFront;
+    return geo;
   }
 
   if (p.type === 'shell') {
@@ -1906,12 +1967,15 @@ export function simulate(p: HybridParams, d: DriverInfo, g: Geometry, opts: { co
           return add(scl(v, Sd), Uend);
         };
       }
-    } else if (p.type === 'sealed' || p.type === 'shell') {
+    } else if (p.type === 'sealed' || p.type === 'shell' || p.type === 'tube') {
       // box compliance with light stuffing losses (a small parallel resistance)
       Zf = zRad(Sd, f);
-      const Vb = (g.chambers[0]?.volumeL ?? 10) / 1000;
+      // opposed tube: two woofers, each on its own amplifier channel at the same voltage,
+      // share the air — each sees half the volume, and both cones radiate
+      const nW = p.type === 'tube' ? 2 : 1;
+      const Vb = (g.chambers[0]?.volumeL ?? 10) / 1000 / nW;
       Zr = inv(cx(1 / ((RHO * C) / Sd * 30), w * (Vb / (RHO * C * C))));
-      out = (v) => scl(v, Sd);
+      out = (v) => scl(v, Sd * nW);
     } else {
       // waveguide: not simulated (see warnings) — sealed-box-like placeholder for completeness
       Zf = zRad(Sd, f);
@@ -2394,11 +2458,18 @@ export function buildIssues(p: HybridParams, g: Geometry, d: DriverInfo, plan: P
     const halves = plan.segments.some((sg) => sg.core > 0);
     out.push(
       big.length
-        ? { level: 'bad', title: `The shell is Ø${Math.round(2 * sh.Rmax)} mm — too big for your bed even in half-rings`, body: 'Make it smaller or print it on a bigger printer.' }
-        : { level: 'ok', title: `${plan.segments.length} pieces: ${halves ? 'bands split into half-rings' : 'bands'}, printed nose-up`, body: `Each band (up to ${Math.round(Math.max(...plan.segments.map((sg) => sg.z1)))} mm tall) prints standing on its rim with no support; the curve stays under 45° except at the very back, where a little tree support helps.${halves ? ' Bands wider than the bed print as two half-rings with keyed seam faces — glue the halves first, then the bands.' : ''} Glue with epoxy on a printed 3 mm lip.` }
+        ? { level: 'bad', title: `The ${sh.opposed ? 'tube' : 'shell'} is Ø${Math.round(2 * sh.Rmax)} mm — too big for your bed even in half-rings`, body: 'Make it smaller or print it on a bigger printer.' }
+        : { level: 'ok', title: `${plan.segments.length} pieces: ${halves ? 'bands split into half-rings' : 'bands'}, printed nose-up`, body: `Each band (up to ${Math.round(Math.max(...plan.segments.map((sg) => sg.z1)))} mm tall) prints standing on its rim with no support; ${sh.opposed ? 'the tube wall is vertical as it prints, and the two end rings print end-face down, flat on the bed (turn the front one over in the slicer; the fillet round the end stays under 45°).' : 'the curve stays under 45° except at the very back, where a little tree support helps.'}${halves ? ' Bands wider than the bed print as two half-rings with keyed seam faces — glue the halves first, then the bands.' : ''} Glue with epoxy on a printed 3 mm lip.` }
     );
     const lines = p.wallMm / pr.lineWidth;
     out.push({ level: lines < 3 ? 'warn' : 'ok', title: `Walls ${p.wallMm} mm = ${lines.toFixed(lines % 1 ? 1 : 0)} lines`, body: 'A curved shell is very stiff for its weight (no flat panels to flex), so thin walls are fine; fill with 100 % infill for mass and damping, or pour a little sand-epoxy into the back half.' });
+    if (sh.opposed) {
+      const te = sh.opposed.endMm;
+      out.splice(1, 1, { level: lines < 4 ? 'warn' : 'ok', title: `Tube wall ${p.wallMm} mm = ${lines.toFixed(lines % 1 ? 1 : 0)} lines`, body: `A sealed sub box sees well over 150 dB inside at full excursion. A cylinder carries that as hoop tension evenly round its wall — no flat panel to bow — so it is the stiffest shape for the plastic used. Print the wall at 100 % infill (solid), ${lines < 4 ? 'and make it at least 4 lines; ' : ''}a band of sand-epoxy or a wrap of fibreglass cloth round the middle adds mass and damping.` });
+      out.push({ level: 'ok', title: 'End walls: one woofer on each', body: `Each end is a flat ${te} mm wall with a Ø${Math.round(2 * sh.holeR)} mm hole and a Ø${Math.round(2 * sh.landR)} mm land; both woofers screw on from OUTSIDE with heat-set M5 inserts and foam gasket tape, magnets inside facing each other. Print the end bands end-face down, flat on the bed. Wire both woofers so the same signal pushes both cones OUT of the tube — their pushes on the tube cancel.` });
+      out.push({ level: 'ok', title: 'Cradle, terminals, fill', body: 'Lies on its side in a printed cradle (two saddles, or the ring shown) with felt pads, so it can\'t roll. Two binding-post pairs (one per woofer, for separate amplifier channels) through a printed boss on the wall underneath; fill with polyester wool through a woofer hole before the second woofer goes on.' });
+      return out;
+    }
     out.push({ level: 'ok', title: 'Front land', body: `The woofer sits on a flat Ø${Math.round(2 * sh.landR)} mm land with its Ø${Math.round(2 * sh.holeR)} mm hole printed in. Use heat-set M4 inserts for its screws and foam gasket tape.` });
     out.push({ level: 'ok', title: 'Stand', body: 'A round shell needs a cradle: print a ring (or use a cork ring for a bowl) under it, or the pedestal shown. Terminals: a small binding-post pair through the back pole; fill with polyester wool through the woofer hole.' });
     return out;
@@ -2627,7 +2698,7 @@ export { sub as cxSub };
 export function tweeterSetup(p: HybridParams): { mount: TweeterMount; waveguide: boolean; tweeter: DriverInfo | null } {
   const mount: TweeterMount = p.tweeterMount ?? (p.head === 'flat' || p.head === 'waveguide' ? 'pod' : 'none');
   const waveguide = p.tweeterWaveguide ?? p.head === 'waveguide';
-  const tweeter = mount === 'none' || p.type === 'waveguide' || p.type === 'folded-horn' ? null : (findDriver(p.tweeterId) ?? null);
+  const tweeter = mount === 'none' || p.type === 'waveguide' || p.type === 'folded-horn' || p.type === 'tube' ? null : (findDriver(p.tweeterId) ?? null);
   return { mount: tweeter ? mount : 'none', waveguide, tweeter };
 }
 
@@ -2883,6 +2954,15 @@ export const PRINTED_DESIGNS: PrintedDesign[] = [
     blurb:
       'A curved, egg-shaped shell — a solid of revolution around the woofer — with the tweeter in a pod on top. No parallel walls inside for standing waves to build up between, and the front curves away so gently that edge diffraction almost disappears: the shapes that measure smoothest and that woodworkers almost never attempt.',
     params: mon({ type: 'shell', driverId: 'sb17nrx2c35-8', heightMm: 300, depthMm: 380, extrusionMm: 300, wallMm: 6, rounding: 1, dividers: 0, tweeterMount: 'pod' }),
+  },
+  {
+    id: 'tube-sub',
+    name: 'Printed opposed sub tube',
+    short: '2 × 8″ SS8-22, Ø228 × 420 mm, sealed',
+    difficulty: 2,
+    blurb:
+      'The printed version of the opposed 8″ sub cube — and printed, a TUBE probably makes the most sense: one woofer on each end, magnets facing inside, so their pushes cancel along the axis. A round wall takes the huge pressure inside a small sealed sub as even hoop tension, where a flat printed panel would bow; it prints as plain rings with straight walls and no support; and the two woofers sit on one axis by construction. At Ø228 mm each ring fits a 250 mm bed whole. Lies on its side in a cradle. Electronics are planned separately.',
+    params: mon({ type: 'tube', driverId: 'ss8-22', heightMm: 228, depthMm: 420, extrusionMm: 228, wallMm: 6, rounding: 1, dividers: 0, tweeterMount: 'none', tweeterWaveguide: false }),
   },
   {
     id: 'line',

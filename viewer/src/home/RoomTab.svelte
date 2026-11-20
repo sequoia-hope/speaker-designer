@@ -159,7 +159,7 @@
   /** printed designs that are subwoofers: the folded horn and the tapped horns */
   const SUB_CHOICES = [
     { id: 'sub', name: 'Printed folded horn', type: HYBRID_PRESETS.sub.type },
-    ...PRINTED_DESIGNS.filter((x) => x.params.type === 'tapped' || x.params.type === 'folded-horn').map((x) => ({ id: x.id, name: x.name, type: x.params.type })),
+    ...PRINTED_DESIGNS.filter((x) => x.params.type === 'tapped' || x.params.type === 'folded-horn' || x.params.type === 'tube').map((x) => ({ id: x.id, name: x.name, type: x.params.type })),
   ];
   /**
    * Its simulated free-field response (complex, one cabinet), normalised to its own

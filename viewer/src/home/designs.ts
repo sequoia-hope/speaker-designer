@@ -168,6 +168,26 @@ export const DESIGNS: DesignPreset[] = [
     learn: 'Vented subs trade size for efficiency near tuning. In a small room they can sound boomy unless placed and EQ\'d carefully.',
     settings: { ...base, arrangement: 'sub', boxType: 'vented', wooferId: 'sb34swnrx-s75-6', tweeterId: '', aspect: 'cube', quantity: 1, stands: false, roundoverMm: 6 },
   },
+  {
+    id: 'sub8-opposed',
+    name: 'Opposed 8″ sealed sub cube',
+    short: '2 × Dayton SS8-22, front + back, ~20 L',
+    roles: ['sub'],
+    difficulty: 2,
+    blurb: 'Two long-throw 8″ drivers in one small sealed box: one fires forward, one backward, magnets facing inside. Their pushes on the cabinet cancel, so it can be driven hard without walking across the floor. Build one, get it working, then build the second for the other side of the room.',
+    learn: 'An opposed ("force-cancelling") pair moves twice the air of one driver while the box stays still. The box size is set by the two drivers back to back, which happens to give a tight sealed alignment (Qtc ≈ 0.6). In a 12′ room the room\'s own bass gain below ~47 Hz roughly cancels the sealed roll-off; two subs on opposite walls even out the room modes. Amplifier, DSP and sensing electronics are planned separately — each driver gets its own pair of binding posts for now.',
+    settings: { ...base, arrangement: 'opposed', boxType: 'sealed', targetQtc: 0.707, sealedFill: 0.5, wooferId: 'ss8-22', tweeterId: '', aspect: 'cube', quantity: 2, stands: false, roundoverMm: 6 },
+  },
+  {
+    id: 'sub65-opposed',
+    name: 'Opposed 6.5″ sub cube (small fallback)',
+    short: '2 × Dayton DCS165-4, front + back, ~8 L',
+    roles: ['sub'],
+    difficulty: 2,
+    blurb: 'The same force-cancelling layout with 6½″ drivers: a much smaller box (about 10″ on a side), but far less output — the 6 mm Xmax runs out well before the 8″ long-throws do.',
+    learn: 'Output at the bottom end is set by how much air the cones can move: cone area × excursion. Two 6½″ drivers with 6 mm Xmax move under a quarter of the air of two 8″ drivers with 17 mm, so this is the quieter, smaller choice.',
+    settings: { ...base, arrangement: 'opposed', boxType: 'sealed', targetQtc: 0.707, sealedFill: 0.5, wooferId: 'dcs165-4', tweeterId: '', aspect: 'cube', quantity: 2, stands: false, roundoverMm: 6 },
+  },
 ];
 
 export function designById(id: string) {

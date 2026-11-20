@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BuildPlan, Panel } from './speakerBuild';
+  import { bindingPostOffsets, type BuildPlan, type Panel } from './speakerBuild';
   import { fmtInFrac } from './roomAcoustics';
 
   let { panel, plan }: { panel: Panel; plan: BuildPlan } = $props();
@@ -39,10 +39,17 @@
       <rect x={backX(tm.xMm) - 37.5} y={tm.yMm - 37.5} width="75" height="75" class="cut" rx="4" />
       <text x={backX(tm.xMm)} y={tm.yMm + 58} text-anchor="middle" class="note">terminal cup (use its template)</text>
     {:else}
-      <circle cx={backX(tm.xMm) - 9.5} cy={tm.yMm} r="4.5" class="cut" />
-      <circle cx={backX(tm.xMm) + 9.5} cy={tm.yMm} r="4.5" class="cut" />
-      <text x={backX(tm.xMm)} y={tm.yMm + 22} text-anchor="middle" class="note">binding posts</text>
+      {@const posts = bindingPostOffsets(plan.box)}
+      {#each posts as [dx, dy]}
+        <circle cx={backX(tm.xMm + dx)} cy={tm.yMm + dy} r="4.5" class="cut" />
+      {/each}
+      <text x={backX(tm.xMm)} y={tm.yMm + (posts.length > 2 ? 32 : 22)} text-anchor="middle" class="note">binding posts{posts.length > 2 ? ' (2 pairs)' : ''}</text>
     {/if}
+    {#each plan.backHoles as h}
+      {#if h.rebateDiaMm}<circle cx={backX(h.xMm)} cy={h.yMm} r={h.rebateDiaMm / 2} class="reb" />{/if}
+      <circle cx={backX(h.xMm)} cy={h.yMm} r={h.throughDiaMm / 2} class="cut" />
+      <text x={backX(h.xMm)} y={h.yMm + 4} text-anchor="middle" class="note">back woofer Ø{h.throughDiaMm.toFixed(0)}</text>
+    {/each}
     {#if plan.box.port}
       {#each plan.box.rearPorts as rp}
         <circle cx={backX(rp.xMm)} cy={rp.yMm} r={(plan.box.port.diameterMm + 4) / 2} class="cut" />

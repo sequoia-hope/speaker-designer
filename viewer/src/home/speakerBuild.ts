@@ -30,9 +30,17 @@ export const portNoiseMs = (ends: PortEnds | undefined) => (ends === 'flared' ? 
  *  center — woofer / tweeter / woofer side by side (horizontal centre channel)
  *  sub    — one woofer, no tweeter (subwoofer)
  *  fr     — one full-range driver, no tweeter, no crossover
+ *  opposed — subwoofer with two identical drivers, one in the front baffle and one
+ *            in the back panel, firing opposite ways (magnets facing inside): their
+ *            reaction forces cancel, so the cabinet barely shakes
  */
-export type Arrangement = 'wt' | 'mtm' | 'tower' | 'center' | 'sub' | 'fr';
-export const isSingleDriver = (a: Arrangement | undefined) => a === 'sub' || a === 'fr';
+export type Arrangement = 'wt' | 'mtm' | 'tower' | 'center' | 'sub' | 'fr' | 'opposed';
+/** no tweeter: one driver type plays everything it plays (a sub, a full-range, an opposed pair) */
+export const isSingleDriver = (a: Arrangement | undefined) => a === 'sub' || a === 'fr' || a === 'opposed';
+/** a subwoofer layout (no tweeter, sub drivers, a low-pass from the amp) */
+export const isSubArrangement = (a: Arrangement | undefined) => a === 'sub' || a === 'opposed';
+/** opposed: the least air gap between the two magnets inside (mm) */
+export const OPPOSED_MAGNET_GAP_MM = 20;
 
 export interface SheetMaterial {
   id: string;
@@ -145,7 +153,7 @@ export interface Hole {
 }
 
 export function wooferCountOf(a: Arrangement | undefined) {
-  return a === 'mtm' || a === 'tower' || a === 'center' ? 2 : 1;
+  return a === 'mtm' || a === 'tower' || a === 'center' || a === 'opposed' ? 2 : 1;
 }
 
 export interface PortDesign {
@@ -195,6 +203,8 @@ export interface BuildPlan {
   material: SheetMaterial;
   panels: Panel[];
   holes: Hole[];
+  /** driver holes in the back panel (opposed layout only), same frame as `holes` */
+  backHoles: Hole[];
   braces: string[];
   sheets: SheetLayout[];
   shopping: ShoppingItem[];
@@ -302,7 +312,12 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
       : o.aspect === 'cube'
         ? { h: 1.15, d: 1.1 }
         : { h: 1.6, d: 1.25 };
-  const depthMin = (d0.mountDepthMm ?? 80) + 25 - (baffle - t);
+  // opposed: the two magnets face each other inside, so the box holds two mounting depths
+  // (+ the back panel's rebate) and a gap between the magnets
+  const depthMin =
+    arr === 'opposed'
+      ? 2 * (d0.mountDepthMm ?? 80) + (d0.flangeMm ?? 0) + OPPOSED_MAGNET_GAP_MM - (baffle - t)
+      : (d0.mountDepthMm ?? 80) + 25 - (baffle - t);
 
   /**
    * Internal box for a gross volume. `needDi` forces at least that internal depth
@@ -317,6 +332,12 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
     if (arr === 'center') {
       needExtW = 2 * fw + (ft ? ft + 2 * gap : gap) + 2 * 14;
       needExtH = Math.max(fw, ft) + 2 * 14;
+    } else if (arr === 'opposed') {
+      // one driver centred on the front and on the back; the back's corners must
+      // still take a pair of binding posts (46 mm square) clear of the back driver
+      const side = Math.max(fw + 2 * 12, 2 * t + 100 + (fw + 12) / Math.SQRT2);
+      needExtW = side;
+      needExtH = side;
     } else {
       needExtW = Math.max(fw, ft) + 2 * 12;
       const stack = arr === 'mtm' || arr === 'tower' ? 2 * fw + gap : fw;
@@ -489,6 +510,28 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
   const grossL = grossOf(port);
   let { wi, hi, di } = shape;
   const deadSpaceMm = shape.dead;
+  if (alignment.kind === 'sealed' && !port) {
+    // The drivers can force a bigger box than the volume asked for (an opposed pair's
+    // two magnets back to back, a baffle wide enough for the frame): the air it holds
+    // then sets the real Qtc, not the target.
+    const activeHi = hi - deadSpaceMm - (deadSpaceMm ? t : 0);
+    const actualNet = (wi * activeHi * di) / 1e6 / 1.04 - (d.displacementL ?? 0.6);
+    if (actualNet > netL * 1.05) {
+      const fillGain = 1 + 0.15 * (o.sealedFill ?? 0);
+      const alpha = d.vasL / (actualNet * fillGain);
+      const asked = { netL, qtc: alignment.qtc };
+      netL = actualNet;
+      alignment = { kind: 'sealed', fcHz: d.fsHz * Math.sqrt(alpha + 1), qtc: d.qts * Math.sqrt(alpha + 1) };
+      const i = notes.findIndex((n) => n.startsWith('Sealed:'));
+      const msg = `Sealed: Qtc ${alignment.qtc.toFixed(2)}, system resonance fc = ${alignment.fcHz.toFixed(0)} Hz. The ${arr === 'opposed' ? 'two drivers back to back need' : 'drivers need'} a box this big, so it holds ${actualNet.toFixed(1)} L of air rather than the ${asked.netL.toFixed(1)} L that Qtc ${asked.qtc.toFixed(2)} asks for — the bass is a little ${alignment.qtc < asked.qtc ? 'tighter and rolls off earlier' : 'looser'} than targeted (EQ can shape it).`;
+      if (i >= 0) notes[i] = msg;
+      else notes.push(msg);
+    }
+  }
+  if (arr === 'opposed')
+    notes.push(
+      `Opposed drivers: one woofer in the front baffle, one in the back panel, both magnets inside facing each other (${OPPOSED_MAGNET_GAP_MM} mm apart or more). Wired in phase, both cones move OUT together, so the push on the cabinet from one is cancelled by the other — the box barely shakes even at full excursion, and they share the same ${netL.toFixed(0)} L of air (like one driver with twice the cone area).`
+    );
   if (deadSpaceMm > 0)
     notes.push(
       `Floor-standing: the woofers only need ${netL.toFixed(0)} L, so the bottom ${Math.round(deadSpaceMm)} mm is walled off with a false floor. Fill that space with dry sand through a hole before closing it — a heavy base keeps a tall speaker stable and dead.`
@@ -562,6 +605,16 @@ export function designBox(o: BuildOptions, portObstacleMm = 0): BoxDesign {
 // inner end also needs one diameter of free air in front of it.
 
 export const TERMINAL_CUP_MM = 75;
+/**
+ * Binding-post holes (offsets in mm from the terminal centre, x right as seen
+ * from the front, y down): one pair 19 mm apart, or for the opposed layout two
+ * pairs in a 19 mm square (top pair = front driver, bottom pair = back driver).
+ */
+export function bindingPostOffsets(box: Pick<BoxDesign, 'arrangement'>): [number, number][] {
+  return box.arrangement === 'opposed'
+    ? [[-9.5, -9.5], [9.5, -9.5], [-9.5, 9.5], [9.5, 9.5]]
+    : [[-9.5, 0], [9.5, 0]];
+}
 export const BRACE_FRAME_MM = 38;
 const TERMINAL_DEPTH_MM = 12; // how far the cup sticks into the box past the back panel
 
@@ -599,7 +652,7 @@ export interface FitResult {
   portObstacleMm: number;
 }
 
-export function fitInternals(box: BoxDesign, holes: Hole[], o: BuildOptions): FitResult {
+export function fitInternals(box: BoxDesign, holes: Hole[], o: BuildOptions, back: Hole[] = []): FitResult {
   const t = box.wallMm;
   const bt = box.baffleMm;
   const { w: W, h: H, d: Dx } = box.externalMm;
@@ -632,9 +685,22 @@ export function fitInternals(box: BoxDesign, holes: Hole[], o: BuildOptions): Fi
       mouths.push({ label: 'air in front of the port', x: h.xMm, y: h.yMm, r, z0: port.lengthMm, z1: port.lengthMm + port.diameterMm, group: 'h' + i });
     }
   });
+  // opposed: the back woofer hangs forward from the back panel (z measured from the front)
+  back.forEach((h, i) => {
+    const md = wf.mountDepthMm ?? 80;
+    const z = Dx - (h.rebateDepthMm ?? 0);
+    solids.push({ label: h.label + ' basket', x: h.xMm, y: h.yMm, r: h.throughDiaMm / 2, z0: z - 0.55 * md, z1: z, group: 'b' + i });
+    solids.push({ label: h.label + ' magnet', x: h.xMm, y: h.yMm, r: wf.frameDiaMm / 4, z0: z - md, z1: z - 0.55 * md, group: 'b' + i });
+  });
   const drivers = solids.filter((s) => !s.label.startsWith('Port'));
-  for (const s of drivers)
+  for (const s of drivers.filter((s) => !s.group.startsWith('b')))
     if (s.z1 > zIn1 - 3) issues.push(`${s.label} reaches the back panel (needs ${Math.round(s.z1 - zIn0 + 3)} mm inside, box has ${Math.round(innerD)} mm).`);
+  if (back.length) {
+    const frontEnd = Math.max(...drivers.filter((s) => s.group.startsWith('h')).map((s) => s.z1));
+    const backEnd = Math.min(...drivers.filter((s) => s.group.startsWith('b')).map((s) => s.z0));
+    if (backEnd - frontEnd < OPPOSED_MAGNET_GAP_MM - 0.5)
+      issues.push(`The two magnets are ${Math.round(backEnd - frontEnd)} mm apart — they need ${OPPOSED_MAGNET_GAP_MM} mm (box ${Math.round(innerD)} mm deep inside).`);
+  }
 
   // ---- rear ports: highest spot on the back that clears the drivers ----
   const rearPorts: { xMm: number; yMm: number }[] = [];
@@ -694,7 +760,8 @@ export function fitInternals(box: BoxDesign, holes: Hole[], o: BuildOptions): Fi
   // nearest free spot to the usual ⅓-up, centred position; posts if no cup fits
   const yPref = (H * 2) / 3;
   let term: { x: number; y: number; kind: 'cup' | 'posts' } | null = null;
-  for (const posts of [false, true]) {
+  // opposed: two pairs of posts (one per driver) in a 2 × 2 square — never a one-pair cup
+  for (const posts of box.arrangement === 'opposed' ? [true] : [false, true]) {
     if (term) break;
     if (cupOk(W / 2, yPref, posts)) {
       term = { x: W / 2, y: yPref, kind: posts ? 'posts' : 'cup' };
@@ -898,7 +965,14 @@ export function cutList(box: BoxDesign, o: BuildOptions, mat: SheetMaterial): Pa
       widthMm: W,
       thicknessMm: t,
       materialId: mat.id,
-      notes: ['Terminal cup / binding-post holes' + (o.boxType === 'vented' && o.portSide === 'rear' ? ' + port hole.' : '.')],
+      notes:
+        box.arrangement === 'opposed'
+          ? [
+              'The second driver baffle: the back woofer\'s hole + flush-mount rebate, cut with the same circle-jig settings as the front, BEFORE assembly.',
+              'Binding posts in a corner, clear of the back woofer.',
+              `Round over the outer edges like the front (${(o.roundoverMm / 25.4).toFixed(2)}″).`,
+            ]
+          : ['Terminal cup / binding-post holes' + (o.boxType === 'vented' && o.portSide === 'rear' ? ' + port hole.' : '.')],
     },
     {
       id: 'side',
@@ -990,7 +1064,7 @@ export function baffleHoles(box: BoxDesign, o: BuildOptions): Hole[] {
     kind: 'tweeter',
     ...screws(tw!),
   });
-  const wl = (i: number) => `Woofer ${box.wooferCount > 1 ? i + ' ' : ''}(${wf.model})`;
+  const wl = (i: number) => (arr === 'opposed' ? `Front woofer (${wf.model})` : `Woofer ${box.wooferCount > 1 ? i + ' ' : ''}(${wf.model})`);
   let y = 0;
   if (arr === 'center') {
     const cy = H / 2;
@@ -1053,6 +1127,16 @@ export function baffleHoles(box: BoxDesign, o: BuildOptions): Hole[] {
     }
   }
   return holes;
+}
+
+/**
+ * Driver holes in the back panel: only the opposed layout has one — the same hole
+ * as the front woofer's, straight behind it. Same frame as the baffle's holes and
+ * `rearPorts` (x from the left SEEN FROM THE FRONT, y down from the top edge).
+ */
+export function backHoles(box: BoxDesign, front: Hole[]): Hole[] {
+  if (box.arrangement !== 'opposed') return [];
+  return front.filter((h) => h.kind === 'woofer').map((h) => ({ ...h, label: h.label.replace(/^Front woofer/, 'Back woofer') }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1125,7 +1209,7 @@ export interface PanelOp {
   ops: string[];
 }
 
-export function panelOperations(box: BoxDesign, panels: Panel[], holes: Hole[], o: BuildOptions, mat: SheetMaterial): PanelOp[] {
+export function panelOperations(box: BoxDesign, panels: Panel[], holes: Hole[], o: BuildOptions, mat: SheetMaterial, back: Hole[] = []): PanelOp[] {
   const t = mat.thicknessMm;
   const f = (mm: number) => `${Math.round(mm)} mm`;
   const innerD = box.externalMm.d - box.baffleMm - t;
@@ -1151,6 +1235,15 @@ export function panelOperations(box: BoxDesign, panels: Panel[], holes: Hole[], 
       else if (!o.doubleBaffle) list.push('From the inside face, chamfer the back edge of the woofer hole 45° (router chamfer bit or rasp).');
       list.push(`After assembly: round over the front edges, ${(o.roundoverMm / 25.4).toFixed(2)}″ radius.`);
     } else if (p.id === 'back') {
+      if (back.length) list.push('Draw a vertical centre line on the OUTSIDE face — the back woofer goes straight behind the front one.');
+      for (const h of back) {
+        list.push(`${h.label}: mark centre ${f(h.yMm)} from the top edge, on the centre line; drill a ¼″ pivot hole 6 mm deep (not through).`);
+        if (h.rebateDiaMm && h.rebateDepthMm) list.push(`  • rebate Ø${h.rebateDiaMm.toFixed(0)} × ${h.rebateDepthMm} mm deep on the OUTSIDE face, then through-hole Ø${h.throughDiaMm.toFixed(1)} — same jig settings as the baffle.`);
+        else list.push(`  • through-hole Ø${h.throughDiaMm.toFixed(1)} — same jig setting as the baffle.`);
+        if (h.screwPcdMm && h.screwCount)
+          list.push(`  • ${h.screwCount} screw holes on a Ø${h.screwPcdMm.toFixed(0)} mm circle${h.screwPcdEstimated ? ' (estimated — mark them through the real driver)' : ''}; pilot 3 mm (⅛″), 15 mm deep.`);
+        list.push('  • from the inside face, chamfer the back edge of the hole 45°.');
+      }
       list.push(
         box.terminalMm.kind === 'cup'
           ? `Mark the ${TERMINAL_CUP_MM} mm terminal-cup cut-out centred ${f(box.externalMm.h - box.terminalMm.yMm)} up from the bottom edge${Math.abs(box.terminalMm.xMm - box.externalMm.w / 2) > 2 ? ` and ${f(box.terminalMm.xMm)} from the left (seen from the front)` : ''}; cut with a jigsaw.`
@@ -1228,19 +1321,23 @@ export function makePlan(o0: BuildOptions): BuildPlan {
     // a centre speaker sits on/under a TV: port it out the back; a sub has no tweeter
     portSide: o0.arrangement === 'center' ? 'rear' : o0.portSide,
     driverTweeter: isSingleDriver(o0.arrangement) ? null : o0.driverTweeter,
+    // opposed: a sealed box (a port would need its own panel, and the point is a tight sealed sub)
+    ...(o0.arrangement === 'opposed' ? { boxType: 'sealed' as BoxType, doubleBaffle: false } : {}),
   };
   const mat = MATERIALS.find((m) => m.id === o.materialId) ?? MATERIALS[0];
   // design the box, lay out the baffle, check the parts inside fit; if a rear
   // port has to pass behind a driver, design it again with room for that
   let box = designBox(o);
   let holes = baffleHoles(box, o);
-  let fit = fitInternals(box, holes, o);
+  let back = backHoles(box, holes);
+  let fit = fitInternals(box, holes, o, back);
   let obstacle = 0;
   for (let k = 0; k < 4 && fit.portObstacleMm > obstacle; k++) {
     obstacle = Math.ceil(fit.portObstacleMm);
     box = designBox(o, obstacle);
     holes = baffleHoles(box, o);
-    fit = fitInternals(box, holes, o);
+    back = backHoles(box, holes);
+    fit = fitInternals(box, holes, o, back);
   }
   box.braceFromBaffleMm = fit.braceFromBaffleMm;
   box.rearPorts = fit.rearPorts;
@@ -1252,18 +1349,18 @@ export function makePlan(o0: BuildOptions): BuildPlan {
   const stand = standDesign(box, holes, o, mat);
   const sheets = nestSheets([...panels, ...(stand?.panels ?? [])], o.quantity, mat);
   const jig = jigSettings(holes, box.baffleMm);
-  const panelOps = panelOperations(box, [...panels, ...(stand?.panels ?? [])], holes, o, mat);
+  const panelOps = panelOperations(box, [...panels, ...(stand?.panels ?? [])], holes, o, mat, back);
   const density = mat.id.startsWith('mdf') ? 750 : 680;
   const woodKg =
     panels.reduce((a, p) => a + p.qtyPerBox * p.lengthMm * p.widthMm * p.thicknessMm, 0) * 1e-9 * density;
-  const massKgPerBox = woodKg + (o.driverWoofer.massKg ?? 1.5) + (o.driverTweeter?.massKg ?? 0.4) + 0.4;
+  const massKgPerBox = woodKg + box.wooferCount * (o.driverWoofer.massKg ?? 1.5) + (o.driverTweeter ? o.driverTweeter.massKg ?? 0.4 : 0) + 0.4;
 
   const braces = panels.some((p) => p.id === 'brace')
     ? [`One window brace, ${box.braceFromBaffleMm} mm behind the baffle`]
     : ['Box is small enough that the glued panels are stiff on their own'];
 
   const shopping = shoppingList(o, box, mat, sheets.length);
-  const steps = buildSteps(o, box, panels, holes, mat);
+  const steps = buildSteps(o, box, panels, holes, mat, back);
   if (stand) {
     steps.splice(steps.length - 2, 0, {
       title: 'Build the stands',
@@ -1279,7 +1376,7 @@ export function makePlan(o0: BuildOptions): BuildPlan {
       check: 'Stand sits without rocking on a hard floor; adjust the feet.',
     });
   }
-  return { box, material: mat, panels, holes, braces, sheets, shopping, steps, massKgPerBox, stand, jig, panelOps };
+  return { box, material: mat, panels, holes, backHoles: back, braces, sheets, shopping, steps, massKgPerBox, stand, jig, panelOps };
 }
 
 function shoppingList(o: BuildOptions, box: BoxDesign, mat: SheetMaterial, nSheets: number): ShoppingItem[] {
@@ -1292,10 +1389,10 @@ function shoppingList(o: BuildOptions, box: BoxDesign, mat: SheetMaterial, nShee
       approxUsd: nSheets * mat.approxSheetUsd,
     },
     {
-      item: `Woofer: ${o.driverWoofer.brand} ${o.driverWoofer.model}`,
-      qty: `${q}`,
-      why: 'Bass/midrange driver.',
-      approxUsd: o.driverWoofer.priceUsd ? o.driverWoofer.priceUsd * q : undefined,
+      item: `${isSubArrangement(box.arrangement) ? 'Subwoofer driver' : 'Woofer'}: ${o.driverWoofer.brand} ${o.driverWoofer.model}`,
+      qty: `${q * box.wooferCount}${box.wooferCount > 1 ? ` (${box.wooferCount} per box)` : ''}`,
+      why: box.arrangement === 'opposed' ? 'One in the front, one in the back of each box — buy them together so the pair is matched.' : 'Bass/midrange driver.',
+      approxUsd: o.driverWoofer.priceUsd ? o.driverWoofer.priceUsd * q * box.wooferCount : undefined,
     },
   ];
   if (o.driverTweeter)
@@ -1311,6 +1408,12 @@ function shoppingList(o: BuildOptions, box: BoxDesign, mat: SheetMaterial, nShee
           item: 'No crossover needed — a full-range driver plays the whole band',
           qty: '—',
           why: 'Wire the driver straight to the terminals. Use the AV receiver / DSP to high-pass it around 100–120 Hz so it is not asked for deep bass.',
+        }
+      : box.arrangement === 'opposed'
+      ? {
+          item: 'Amplifier and DSP: your own electronics (planned separately)',
+          qty: `${q}`,
+          why: 'Not part of this plan yet. Each box needs two amplifier outputs (one per driver, same signal, same polarity) plus the low-pass, limiter and room EQ. Wire both drivers out to the binding posts for now; the electronics enclosure is added once its size is known.',
         }
       : box.arrangement === 'sub'
       ? {
@@ -1329,15 +1432,22 @@ function shoppingList(o: BuildOptions, box: BoxDesign, mat: SheetMaterial, nShee
       why: 'The glue joint is what holds the box and makes it airtight.',
       approxUsd: 10,
     },
-    {
-      item: 'Terminal cup or a pair of binding posts',
-      qty: `${q}`,
-      why: 'Speaker-wire connection on the back panel.',
-      approxUsd: 8 * q,
-    },
+    box.arrangement === 'opposed'
+      ? {
+          item: 'Binding posts — two pairs (one pair per driver)',
+          qty: `${2 * q} pairs`,
+          why: 'Each driver gets its own pair so the two can be driven by separate amplifier channels (or paralleled outside the box).',
+          approxUsd: 12 * q,
+        }
+      : {
+          item: 'Terminal cup or a pair of binding posts',
+          qty: `${q}`,
+          why: 'Speaker-wire connection on the back panel.',
+          approxUsd: 8 * q,
+        },
     {
       item: 'Driver mounting screws (#8 × ¾″ pan-head) or T-nuts + M4 machine screws',
-      qty: `${q * (o.driverWoofer.mountingHoles ?? 4) + q * (o.driverTweeter?.mountingHoles ?? 3)}`,
+      qty: `${q * box.wooferCount * (o.driverWoofer.mountingHoles ?? 4) + (o.driverTweeter ? q * (o.driverTweeter.mountingHoles ?? 3) : 0)}`,
       why: 'T-nuts let you remove drivers many times without stripping the wood.',
       approxUsd: 10,
     },
@@ -1373,7 +1483,7 @@ function shoppingList(o: BuildOptions, box: BoxDesign, mat: SheetMaterial, nShee
   return items;
 }
 
-function buildSteps(o: BuildOptions, box: BoxDesign, panels: Panel[], holes: Hole[], mat: SheetMaterial): BuildStep[] {
+function buildSteps(o: BuildOptions, box: BoxDesign, panels: Panel[], holes: Hole[], mat: SheetMaterial, back: Hole[] = []): BuildStep[] {
   const fmt = (mm: number) => `${mm.toFixed(0)} mm (${(mm / 25.4).toFixed(2)}″)`;
   const t = mat.thicknessMm;
   const isMdf = mat.id.startsWith('mdf');
@@ -1421,6 +1531,22 @@ function buildSteps(o: BuildOptions, box: BoxDesign, panels: Panel[], holes: Hol
       check: 'Driver sits flat and flush; the rebate is the same depth all the way round.',
       safety: 'Clamp the baffle down and the waste piece too — the centre disk can fly loose on the final pass.',
     },
+    ...(back.length
+      ? [
+          {
+            title: 'Cut the back woofer hole (same jig settings as the front)',
+            minutes: 45,
+            tools: ['Plunge router', 'Circle-cutting jig', 'Drill'],
+            skills: ['Router circle cutting', 'Flush-mount rebates'],
+            body: [
+              `Without changing the jig, cut the same rebate and through-hole in the back panel: centre on the vertical centre line, ${back.map((h) => fmt(h.yMm)).join(', ')} from the top edge, rebate on the OUTSIDE face.`,
+              'The two drivers must line up on one axis through the box — that is what makes their forces cancel. Measure both panels from the same (top) edge.',
+              'Chamfer the inside edge of the hole 45° like the front.',
+            ],
+            check: 'Lay the baffle on the back panel, outside faces together: the holes line up.',
+          } as BuildStep,
+        ]
+      : []),
     {
       title: 'Back panel holes',
       minutes: 20,
@@ -1429,7 +1555,7 @@ function buildSteps(o: BuildOptions, box: BoxDesign, panels: Panel[], holes: Hol
       body: [
         box.terminalMm.kind === 'cup'
           ? `Cut the terminal-cup hole (use the cup's template), centred ${fmt(box.externalMm.h - box.terminalMm.yMm)} up from the bottom of the back.`
-          : `Drill the two binding-post holes ${fmt(box.externalMm.h - box.terminalMm.yMm)} up from the bottom of the back (no room for a terminal cup beside the port).`,
+          : `Drill the binding-post holes ${fmt(box.externalMm.h - box.terminalMm.yMm)} up from the bottom of the back${Math.abs(box.terminalMm.xMm - box.externalMm.w / 2) > 2 ? `, ${fmt(box.terminalMm.xMm)} from the left (seen from the front)` : ''} (${back.length ? 'two pairs, one per driver, in the corner clear of the back woofer' : 'no room for a terminal cup beside the port'}).`,
         ...box.rearPorts.map((rp) => `Cut the port hole (${fmt(box.port!.diameterMm + 4)}), centre ${fmt(rp.yMm)} down from the top of the back.`),
       ],
     },
@@ -1520,6 +1646,9 @@ function buildSteps(o: BuildOptions, box: BoxDesign, panels: Panel[], holes: Hol
           ? `Fill the box loosely with ~${(box.netVolumeL * 12).toFixed(0)} g of polyfill before the woofer goes in.`
           : 'Fit the port tube; it should be glued airtight to the baffle and its inner end must be at least one port-diameter away from any wall.',
         'Check polarity on every driver with a 1.5 V battery: positive to red should push the cone OUT.',
+        ...(back.length
+          ? ['Opposed pair: wire BOTH drivers the same way, so the same signal pushes BOTH cones OUT of the box at once (front cone forward, back cone backward). That is what cancels the shaking. If one is reversed the bass vanishes — the box just shuffles air from one cone to the other.']
+          : []),
       ],
       check:
         o.boxType === 'sealed'

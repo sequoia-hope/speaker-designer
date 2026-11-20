@@ -1,6 +1,6 @@
 // Turn a printed hybrid design into models the maps can use.
 import { DRIVERS, findDriver } from './drivers';
-import { buildGeometry, mapResponse, simulate, type HybridParams } from './hybrid';
+import { buildGeometry, isRoundType, mapResponse, simulate, type HybridParams } from './hybrid';
 import type { SubModel } from './outdoor';
 import type { BoxAlignment } from './roomAcoustics';
 
@@ -9,6 +9,8 @@ export function driverFor(p: HybridParams) {
 }
 
 export function cabinetDims(p: HybridParams) {
+  // round cabinets (shell, opposed tube): heightMm is the diameter, no side plates
+  if (isRoundType(p.type)) return { w: p.heightMm, h: p.heightMm, d: p.depthMm };
   return { w: p.extrusionMm + 2 * p.plateMm, h: p.heightMm, d: p.depthMm };
 }
 

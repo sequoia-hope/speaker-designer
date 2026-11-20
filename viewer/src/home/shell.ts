@@ -38,6 +38,11 @@ export interface ShellGeometry {
   /** curvature radius of the shell where it meets the land (mm) — an "edge radius" for diffraction */
   edgeRadiusMm: number;
   problems: string[];
+  /**
+   * An opposed-driver tube: a land and woofer hole at BOTH poles (back pole at z = 0,
+   * front at zFront), the woofers mounted outside each end, magnets facing inside.
+   */
+  opposed?: { endMm: number; innerLenMm: number };
 }
 
 const outerR = (s: ShellSpec, u: number) => (s.diaMm / 2) * Math.pow(Math.max(0, 1 - Math.pow(Math.abs(u), s.n)), 1 / s.n);
@@ -135,4 +140,86 @@ export function shellVolumeCm3(g: ShellGeometry): number {
   A /= 2;
   const rc = Cr / (6 * A);
   return Math.abs(2 * Math.PI * rc * A) / 1000;
+}
+
+export interface TubeSpec {
+  /** outside diameter and overall length along the axis (mm) */
+  diaMm: number;
+  lengthMm: number;
+  /** tube wall (mm) */
+  wallMm: number;
+  /** 0 = square ends … 1 = the outer edges rounded as far as the flat driver lands allow */
+  rounding: number;
+}
+
+/** least gap between the two magnets inside an opposed tube (mm) */
+export const TUBE_MAGNET_GAP_MM = 20;
+
+/**
+ * An opposed-driver sealed tube: a printed cylinder with a thick end wall at each
+ * end, a woofer screwed to the outside of each (both magnets inside, facing each
+ * other). It is the round, printed form of the plywood opposed cube: a cylinder
+ * takes the box pressure as hoop tension (no flat panel to flex), and it prints as
+ * plain rings. Same section convention as shellGeometry, so the 3D view, the print
+ * bands and the STEP export revolve it the same way.
+ */
+export function tubeGeometry(s: TubeSpec, woofer: DriverInfo): ShellGeometry {
+  const problems: string[] = [];
+  const R = s.diaMm / 2;
+  const L = s.lengthMm;
+  const t = s.wallMm;
+  // end walls carry the woofers' screws (heat-set inserts): at least 12 mm, twice the wall
+  const te = Math.max(12, 2 * t);
+  const landR = woofer.frameDiaMm / 2 + 6;
+  const holeR = woofer.cutoutDiaMm / 2;
+  if (landR > R) problems.push(`The woofer (Ø${woofer.frameDiaMm} mm frame) needs a Ø${Math.round(2 * landR)} mm flat end, but the tube is only Ø${s.diaMm} mm — make it wider.`);
+  if (holeR >= R - t - 2) problems.push(`The woofer hole (Ø${woofer.cutoutDiaMm} mm) leaves no end wall inside a Ø${s.diaMm} mm tube — make it wider.`);
+  const md = woofer.mountDepthMm ?? 80;
+  const innerLen = L - 2 * te;
+  if (innerLen < 2 * md + TUBE_MAGNET_GAP_MM)
+    problems.push(`The two woofers need ${Math.round(2 * md + TUBE_MAGNET_GAP_MM + 2 * te)} mm of tube (two ${md} mm mounting depths, a ${TUBE_MAGNET_GAP_MM} mm gap between the magnets and two ${te} mm end walls); it is ${Math.round(L)} mm.`);
+  // outer edge fillet, outside the flat land
+  const rf = Math.max(0, Math.min(R - landR, 40, L / 4) * Math.max(0, Math.min(1, s.rounding)));
+  const arc = (cz: number, sgn: 1 | -1): [number, number][] => {
+    const out: [number, number][] = [];
+    for (let i = 0; i <= 12; i++) {
+      const a = (i / 12) * (Math.PI / 2);
+      // back end (sgn −1): from the end face (r = R − rf) round to the side (z = rf); front mirrored
+      out.push(sgn < 0 ? [R - rf + rf * Math.sin(a), cz - rf * Math.cos(a)] : [R - rf + rf * Math.cos(a), cz + rf * Math.sin(a)]);
+    }
+    return out;
+  };
+  const wall: [number, number][] = [];
+  const nz = Math.max(2, Math.ceil((L - 2 * rf) / 10));
+  for (let i = 1; i < nz; i++) wall.push([R, rf + ((L - 2 * rf) * i) / nz]);
+  const innerWall: [number, number][] = [];
+  const ni = Math.max(2, Math.ceil((L - 2 * te) / 10));
+  for (let i = ni - 1; i >= 1; i--) innerWall.push([R - t, te + ((L - 2 * te) * i) / ni]);
+  const section: [number, number][] = [
+    [holeR, 0],
+    ...(rf > 0.5 ? arc(rf, -1) : [[R, 0] as [number, number]]),
+    ...wall,
+    ...(rf > 0.5 ? arc(L - rf, 1) : [[R, L] as [number, number]]),
+    [holeR, L],
+    [holeR, L - te],
+    [R - t, L - te],
+    ...innerWall,
+    [R - t, te],
+    [holeR, te],
+  ];
+  // drop repeated points (arc ends meeting the wall)
+  const sec = section.filter((p, i) => i === 0 || Math.hypot(p[0] - section[i - 1][0], p[1] - section[i - 1][1]) > 1e-6);
+  const netL = (Math.PI * (R - t) ** 2 * Math.max(0, innerLen)) / 1e6 - 2 * (woofer.displacementL ?? 0.6);
+  return {
+    spec: { diaMm: s.diaMm, lengthMm: L, n: 99, wallMm: t },
+    Rmax: R,
+    zFront: L,
+    landR,
+    holeR,
+    section: sec,
+    netL,
+    edgeRadiusMm: Math.max(rf, 1),
+    problems,
+    opposed: { endMm: te, innerLenMm: innerLen },
+  };
 }
